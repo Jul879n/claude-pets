@@ -91,7 +91,7 @@ def quantize(colors, k):
         pal = [tuple(sum(c[j] for c in g) // len(g) for j in range(3)) if g else pal[i] for i, g in groups.items()]
     return pal
 
-pal = quantize(list(cells.values()), 14)
+pal = quantize(list(cells.values()), 10)
 
 def punch(c):
     import colorsys
@@ -106,6 +106,16 @@ letters = 'ABCDEFGHIJKLMN'
 rows = [['.'] * SIZE for _ in range(SIZE)]
 for (x, y), c in cells.items():
     rows[y][x] = letters[min(range(len(pal)), key=lambda i: dist(pal[i], c))]
+# suavizado: un pixel que no se parece a la mayoria de sus vecinos (lineas de 1 px, ruido) toma el color dominante de su entorno
+for _ in range(2):
+    nxt = [r[:] for r in rows]
+    for y in range(SIZE):
+        for x in range(SIZE):
+            around = [rows[j][i] for j in range(max(0, y - 1), min(SIZE, y + 2)) for i in range(max(0, x - 1), min(SIZE, x + 2))]
+            top = max(set(around), key=around.count)
+            if rows[y][x] != top and around.count(top) >= 5:
+                nxt[y][x] = top
+    rows = nxt
 print(json.dumps({
     'palette': {letters[i]: '#%02x%02x%02x' % pal[i] for i in range(len(pal))},
     'art': [''.join(r) for r in rows],
