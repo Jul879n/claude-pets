@@ -1,0 +1,11 @@
+{
+  "name": "mascotas",
+  "version": "0.1.0",
+  "author": {
+    "name": "Jul879n"
+  },
+  "description": "Mascotas que muestran en un pane qué hacen la sesión y los agentes. Cero tokens.",
+  "types": "./types/index.d.ts",
+  "license": "MIT",
+  "repository": "https://github.com/Jul879n/claude-pets"
+}

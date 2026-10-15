@@ -1,0 +1,14 @@
+{
+  "name": "claude-pets",
+  "owner": {
+    "name": "Jul879n"
+  },
+  "plugins": [
+    {
+      "name": "mascotas",
+      "source": "./",
+      "description": "Mascotas pixel art que muestran en un pane qué hacen la sesión y los subagentes de Claude Code"
+    }
+  ],
+  "description": "Mascotas pixel art para Claude Code"
+}
