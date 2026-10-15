@@ -36,13 +36,14 @@ Después abre una sesión nueva (o `/reload-plugins`): el pane se abre solo. Con
 |---|---|
 | `/pets` o `/pets ayuda` | Ayuda con todos los subcomandos |
 | `on` / `off` / `abrir` / `cerrar` | Activar, desactivar o reabrir el pane |
-| `tipo`, `nombre`, `color`, `acento`, `accesorio`, `ojos`, `reset` | Personalizar la mascota principal (tipos: cat, owl, robot, fox, dog, bunny, ghost; accesorios: sombrero, corona, lentes, corbata) |
+| `tipo`, `nombre`, `color`, `acento`, `accesorio`, `ojos`, `reset` | Personalizar la mascota principal (tipos: cat, owl, robot, fox, dog, bunny, ghost, dragon, monster; accesorios: sombrero, corona, lentes, corbata) |
 | `generar [texto]` | Mascota al azar, o siempre la misma para un texto |
 | `set <nombre>` / `set guardar` / `set borrar` | Sets temáticos (animales, robots, fantasia, espacio) y propios para las mascotas de los subagentes |
 | `mis`, `usar`, `guardar`, `quitar` | Tu listado de mascotas (lo generado se guarda solo) |
 | `decir <nombre> <mensaje>` | Habla con un subagente por el nombre de su mascota (también `@Nombre mensaje` en el prompt); no pasa por el modelo |
 | `img <ruta o URL> [nombre]` | Convierte una imagen en mascota de 32x32, sin tokens (necesita `python3` y `sips`, macOS) |
-| `ia <descripción>` | Busca una imagen de referencia en la web con el modelo principal y crea la mascota (consume tokens); `ia rapido` usa solo Haiku; `web off` desactiva la búsqueda |
+| `ia <descripción>` | Un subagente (Sonnet) busca una imagen real del personaje, la mira y elige la silueta predefinida más parecida con los colores de la imagen; la imagen convertida a 32x32 queda también en tu listado como `Nombre (img)`. Consume tokens. `ia rapido` usa solo Haiku; `web off` desactiva la búsqueda |
+| `ascii <ruta o URL> [nombre]` | Foto ASCII a color, muy detallada (una letra por celda con el color del pixel y animación), sin tokens; `ascii detalle <16-56>` ajusta el tamaño y `ascii off` vuelve al pixel art |
 | `estilo pixel\|ascii`, `angosto`, `calma`, `avisos`, `historial`, `editar`, `estado` | Opciones de visualización y utilidades |
 
 ## Desarrollo

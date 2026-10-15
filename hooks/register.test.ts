@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { actOf, bar, bigArt, moodOf, generateSet, lookFromSeed, parseLooks, parseColor, pixelCells, scene, SETS, skin, uniqueLooks } from './sprites'
+import { actOf, bar, bigArt, moodOf, generateSet, lookFromSeed, photoCells, parseLooks, parseColor, pixelCells, scene, SETS, skin, uniqueLooks } from './sprites'
 
 describe('actOf', () => {
   test('copiar y mover archivos', () => {
@@ -247,7 +247,7 @@ describe('hablar con subagentes por nombre', () => {
 
 describe('mascotas con IA', () => {
   test('parseLooks valida y normaliza lo que responde el modelo', () => {
-    const out = parseLooks('Claro:\n[{"name":"Zorro Astro!!","pet":"fox","color":"naranja","accessory":"lentes","eyes":"^.^"},{"pet":"dragon","color":"xx","eyes":"muy largo"},5]')
+    const out = parseLooks('Claro:\n[{"name":"Zorro Astro!!","pet":"fox","color":"naranja","accessory":"lentes","eyes":"^.^"},{"pet":"unicornio","color":"xx","eyes":"muy largo"},5]')
     expect(out).toHaveLength(2)
     expect(out[0]).toEqual({ name: 'Zorro Astro', pet: 'fox', color: '#fb923c', accessory: 'lentes', eyes: '^.^', accent: undefined, isSure: true, question: '' })
     expect(out[1]!.pet).toBe('cat')
@@ -334,11 +334,14 @@ describe('referencias web', () => {
       return { value: { isAnswered: true, usage: {}, text: '[{"name":"Rapida","pet":"robot","color":"#6b21a8","confianza":"alta"}]' } } as never
     })
     let spawned = ''
-    on('agent.spawn', (_$, e) => { spawned = e.prompt; return { model: 'inherit' } as never })
+    let spawnModel = ''
+    on('agent.spawn', (_$, e) => { spawned = e.prompt; spawnModel = String(e.model); return { model: 'inherit' } as never })
     const run = (args: string) => $.command.run({ command: 'pets', args } as never)
-    await run('ia EVA-01 de Evangelion')              // por defecto: investiga en la web y dibuja el modelo principal
+    await run('ia EVA-01 de Evangelion')
+    expect(spawnModel).toBe('sonnet')              // por defecto: investiga en la web y dibuja el modelo principal
     expect(spawned).toContain('EVA-01 de Evangelion')
-    expect(spawned).toContain('"art"')                  // lleva la especificacion del dibujo de 32x32
+    expect(spawned).toContain('IMAGEN:')                 // pide una imagen real, que mire con Read, y la silueta predefinida basada en ella
+    expect(spawned).toContain('"dragon"')
     expect(calls).toBe(0)
     spawned = ''
     expect((await run('ia rapido un cohete')).text).toContain('Rapida')   // solo Haiku
@@ -371,5 +374,38 @@ describe('preferencias persistentes', () => {
     const pane = await $.ui.mount({ plugin: 'mascotas', surface: 'terminal', component: 'Pane', requestId: 'mascotas', props: {} as never, viewport: { columns: 170, rows: 40 } })
     const text = (await pane.findAll({ type: 'Text' })).map(t => t.text).join('\n')
     expect(text).toContain('ZETA')
+  })
+})
+
+describe('foto ASCII', () => {
+  const photo = { cols: 4, rows: 3, chars: '@#.  ' + '*+' + '%8%@' + ' ', colors: 'ff0000'.repeat(12) }
+  test('photoCells conserva el tamano, se mueve y cambia con el animo', () => {
+    const p = { cols: 4, rows: 3, chars: '@#%8*+. @#%8', colors: 'ff8800'.repeat(12) }
+    expect(photoCells(p, 'think', 0)).toMatchObject({ columns: 4, rows: 3 })
+    expect(new Set([0, 1, 2, 3].map(t => photoCells(p, 'run', t).cells)).size).toBeGreaterThan(1)
+    expect(new Set([0, 1, 2, 3].map(t => photoCells(p, 'sleep', t).cells)).size).toBeGreaterThan(1)
+    expect(photoCells(p, 'sleep', 0).cells).not.toBe(photoCells(p, 'error', 0).cells)
+    expect(photo.chars.length).toBeGreaterThan(0)
+  })
+
+  test('/pets ascii crea la foto desde la salida de python, se guarda y /pets ascii off la quita', async ($, on) => {
+    mock.store(on, {})
+    on('command.register', () => ({ value: { command: 'pets' } }))
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('agent.list', () => ({ value: [] }))
+    const out = { cols: 4, rows: 3, chars: '@#%8*+. @#%8', colors: 'ff8800'.repeat(12) }
+    let argv: readonly string[] = []
+    on('process.run', (_$, e) => { argv = e.argv; return { value: { exitCode: 0, stdout: JSON.stringify(out), stderr: '' } } as never })
+    const pane = await $.ui.mount({ plugin: 'mascotas', surface: 'terminal', component: 'Pane', requestId: 'mascotas', props: {} as never, viewport: { columns: 170, rows: 40 } })
+    const run = (args: string) => $.command.run({ command: 'pets', args } as never)
+    expect((await run('ascii')).text).toContain('Uso: /pets ascii')
+    expect((await run('ascii detalle 40')).text).toContain('40 columnas')
+    expect((await run('ascii /x/eva.png EVA')).text).toContain('Mascota ASCII creada: EVA (4x3')
+    expect(argv.slice(-2)).toEqual(['/x/eva.png', '40'])
+    const rasters = await pane.findAll({ type: 'Raster' })
+    expect(rasters.some(r => r.props.columns === 4 && r.props.rows === 3)).toBe(true)
+    expect((await run('mis')).text).toContain('EVA: foto ascii')
+    expect((await run('ascii off')).text).toContain('desactivada')
+    expect((await pane.findAll({ type: 'Raster' })).every(r => r.props.columns === 16)).toBe(true)
   })
 })

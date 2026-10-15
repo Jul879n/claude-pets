@@ -1,4 +1,4 @@
-import type { Act, CustomArt, Pool, SavedLook, SetDef } from '../types'
+import type { Act, AsciiPhoto, CustomArt, Pool, SavedLook, SetDef } from '../types'
 
 type Input = Record<string, unknown>
 
@@ -137,7 +137,7 @@ export const KIND_COLOR: Record<string, string> = {
   test: '#34d399', plan: '#9aa3b2', delegate: '#e879f9', run: '#e6e8ee', think: '#9aa3b2',
 }
 
-export const PETS = ['cat', 'owl', 'robot', 'fox', 'dog', 'bunny', 'ghost'] as const
+export const PETS = ['cat', 'owl', 'robot', 'fox', 'dog', 'bunny', 'ghost', 'dragon', 'monster'] as const
 export const ACCESSORIES = ['ninguno', 'sombrero', 'corona', 'lentes', 'corbata'] as const
 export const COLORS: Record<string, string> = {
   naranja: '#fb923c', rosa: '#f472b6', verde: '#4ade80', azul: '#60a5fa', morado: '#c084fc',
@@ -165,6 +165,8 @@ export function bigArt(mood: Mood, tick: number, pet: string, look: Look = { eye
     dog: [' /^\\_/^\\ ', ` (${e}) `, `  (_${m}_)  `],
     bunny: ['  ()_()  ', ` (${e}) `, ` (")${m}(") `],
     ghost: ['  .---.  ', ` (${e}) `, `  ~vwv~  `],
+    dragon: [' /\\^^^/\\ ', ` (${e}) `, `  \\_${m}_/  `],
+    monster: [' \\\\   // ', ` (${e}) `, `  (_${m}_)  `],
   }
   const lines = art[pet] ?? ['  /\\_/\\  ', ` (${e}) `, `  > ${m} <  `]
   if (look.accessory === 'sombrero') return ['   _|^|_  ', ...lines]
@@ -195,7 +197,7 @@ const N = 16
 const BASE = 14
 // codigos: 0 nada, 1 pelaje, 2 contorno, 3 claro, 4 rosado, 5 pico
 const BODY: Record<string, number> = {
-  cat: 0xfbbf24, owl: 0xc084fc, robot: 0x4ade80, fox: 0xfb923c, dog: 0xa16207, bunny: 0xe6e8ee, ghost: 0x9ca3af,
+  cat: 0xfbbf24, owl: 0xc084fc, robot: 0x4ade80, fox: 0xfb923c, dog: 0xa16207, bunny: 0xe6e8ee, ghost: 0x9ca3af, dragon: 0x22c55e, monster: 0x8b5cf6,
 }
 const EYE = 0x0a0c10
 const WHITE = 0xf8fafc
@@ -270,6 +272,24 @@ const shapes: Record<string, (n: number) => Shape> = {
     const E = (cx: number, cy: number, rx: number, ry: number, c: number) => ell(g, cx * k, cy * k, rx * k, ry * k, c)
     E(4.2, 3.3, 1.6, 3.4, 1); E(mirror(4.2), 3.3, 1.6, 3.4, 1); E(4.2, 3.6, 0.7, 2.4, 4); E(mirror(4.2), 3.6, 0.7, 2.4, 4)
     E(7, 9, 6, 4.2, 1); E(7, 10.8, 2.4, 1.6, 3)
+    return g
+  },
+  dragon: n => {
+    const k = n / BASE, g = blank(n)
+    const E = (cx: number, cy: number, rx: number, ry: number, c: number) => ell(g, cx * k, cy * k, rx * k, ry * k, c)
+    const T = (a: number[], b: number[], c: number[], code: number) => tri(g, a.map(v => v * k), b.map(v => v * k), c.map(v => v * k), code)
+    T([1.5, 5], [0.2, 0.3], [4.6, 3.4], 2); T([mirror(1.5), 5], [mirror(0.2), 0.3], [mirror(4.6), 3.4], 2)   // cuernos
+    T([5.6, 3.2], [7, 0.2], [8.4, 3.2], 2)                                                                  // cresta
+    T([0.2, 9], [2.2, 6.4], [2.8, 10.6], 1); T([mirror(0.2), 9], [mirror(2.2), 6.4], [mirror(2.8), 10.6], 1) // aletas
+    E(7, 8, 5.6, 4.8, 1); E(7, 10.8, 3.2, 2, 3)                                                               // cabeza y hocico
+    return g
+  },
+  monster: n => {
+    const k = n / BASE, g = blank(n)
+    const E = (cx: number, cy: number, rx: number, ry: number, c: number) => ell(g, cx * k, cy * k, rx * k, ry * k, c)
+    const T = (a: number[], b: number[], c: number[], code: number) => tri(g, a.map(v => v * k), b.map(v => v * k), c.map(v => v * k), code)
+    T([2, 4.6], [1.2, 0.2], [5, 2.6], 5); T([mirror(2), 4.6], [mirror(1.2), 0.2], [mirror(5), 2.6], 5)       // cuernos
+    E(7, 8, 6.4, 5.4, 1); E(7, 11, 4.2, 2.4, 3)                                                               // cuerpo redondo y barriga
     return g
   },
   ghost: n => {
@@ -388,6 +408,42 @@ export function pixelCells(mood: Mood, tick: number, pet: string, color = '', ac
   return { columns: SPRITE_COLS, rows: SPRITE_ROWS, cells: (new Uint8Array(Uint32Array.from(words).buffer) as unknown as { toBase64: () => string }).toBase64() }
 }
 
+// Misma escala de caracteres (de menos a mas "tinta") que usa el conversor de fotos ASCII.
+export const RAMP = ' .\'^",:;Il!i><~+_-?][}{1)(|/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$'
+
+// Foto ASCII -> celdas de Raster: cada caracter con su color, ajustado al animo (apagada al dormir, roja con error, mas viva al ejecutar),
+// con un leve brillo que cambia de caracter y el cuerpo entero moviendose (balanceo, vibracion, respiracion).
+export function photoCells(photo: AsciiPhoto, mood: Mood, tick: number): { columns: number; rows: number; cells: string } {
+  const { cols, rows } = photo
+  const tint = (c: number) => {
+    if (mood === 'sleep') return shade(c, 0.6)
+    if (mood === 'error') return ((((c >> 16) & 255) * 0.5 + 255 * 0.5) << 16) | ((((c >> 8) & 255) * 0.5) << 8) | (((c & 255) * 0.5) | 0)
+    if (mood === 'happy' || mood === 'run') return light(c, 0.15)
+    return c
+  }
+  const MOVE: Partial<Record<Mood, { dx: number[]; dy: number[] }>> = {
+    think: { dx: [0, 1, 0, 0], dy: [0, 0, 0, 0] }, read: { dx: [-1, 0, 1, 0], dy: [0, 0, 0, 0] },
+    write: { dx: [0, 0, 0, 0], dy: [0, 1, 0, 1] }, run: { dx: [-1, 1, -1, 1], dy: [0, 0, 0, 0] },
+    wait: { dx: [0, 0, 0, 0], dy: [0, 0, 1, 1] }, error: { dx: [-1, 1, -1, 1], dy: [0, 0, 0, 0] },
+    sleep: { dx: [0, 0, 0, 0], dy: [0, 0, 1, 1] }, happy: { dx: [0, 0, 0, 0], dy: [0, 0, 0, 0] },
+  }
+  const mv = MOVE[mood]!, dx = mv.dx[tick % 4]!, dy = mv.dy[tick % 4]!
+  const shimmer = mood === 'think' || mood === 'read' || mood === 'write' || mood === 'run'
+  const words: number[] = []
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      const sx = x - dx, sy = y - dy
+      const ch = sx >= 0 && sx < cols && sy >= 0 && sy < rows ? photo.chars[sy * cols + sx] : ' '
+      if (!ch || ch === ' ') { words.push(0x20, 0, NONE); continue }
+      const i = RAMP.indexOf(ch)
+      const alt = shimmer && i > 0 && (sx * 3 + sy * 5 + tick) % 13 === 0 ? RAMP[Math.min(RAMP.length - 1, i + 1)]! : ch
+      const base = parseInt(photo.colors.slice((sy * cols + sx) * 6, (sy * cols + sx) * 6 + 6), 16)
+      words.push(alt.codePointAt(0)!, tint(Number.isNaN(base) ? 0x808080 : base), NONE)
+    }
+  }
+  return { columns: cols, rows, cells: (new Uint8Array(Uint32Array.from(words).buffer) as unknown as { toBase64: () => string }).toBase64() }
+}
+
 const NAMES = [
   'Michi', 'Luna', 'Toto', 'Nube', 'Pepa', 'Rocky', 'Kiwi', 'Mora', 'Bruno', 'Coco', 'Pipo', 'Lola', 'Simba', 'Tuna',
   'Chispa', 'Fito', 'Canela', 'Max', 'Perla', 'Nico', 'Bola', 'Zeus', 'Lupe', 'Tango', 'Mango', 'Olivo', 'Pelusa',
@@ -414,7 +470,7 @@ export const SETS: Record<string, Pool> = {
     accessories: ['ninguno', 'lentes', 'corbata'],
   },
   fantasia: {
-    pets: ['ghost', 'owl', 'fox', 'bunny'], colors: hex('morado', 'rosa', 'azul', 'cian'),
+    pets: ['ghost', 'owl', 'fox', 'bunny', 'dragon', 'monster'], colors: hex('morado', 'rosa', 'azul', 'cian', 'verde'),
     names: ['Hada', 'Duende', 'Brujo', 'Gnomo', 'Dragon', 'Merlin', 'Elfo', 'Troll', 'Nixie', 'Fauno', 'Sirena', 'Grifo'],
     accessories: ['corona', 'sombrero', 'ninguno'],
   },
@@ -492,23 +548,13 @@ export function uniqueLooks(ids: string[], set?: SetDef): Record<string, AgentLo
 // Mascotas con IA: el prompt que se le da al modelo y la validacion estricta de lo que responde.
 export const IA_SYSTEM =
   'Eres un generador de mascotas de pixel art. Responde SOLO un arreglo JSON, sin texto ni markdown. ' +
-  'Cada elemento: {"name": string de hasta 12 letras, "pet": "cat"|"owl"|"robot"|"fox"|"dog"|"bunny"|"ghost", ' +
+  'Cada elemento: {"name": string de hasta 12 letras, "pet": "cat"|"owl"|"robot"|"fox"|"dog"|"bunny"|"ghost"|"dragon"|"monster" (elige la silueta mas parecida al personaje), ' +
   '"color": "#rrggbb" (color predominante), "accent": "#rrggbb" (color secundario: hocico, vientre o placa; omitelo si no aplica), ' +
   '"accessory": "ninguno"|"sombrero"|"corona"|"lentes"|"corbata", ' +
   '"eyes": 3 caracteres con un punto en medio, por ejemplo "o.o" "^.^" "@.@" "0.0" "u.u" "*.*", ' +
   '"confianza": "alta"|"baja", "pregunta": string breve}. ' +
   'Si la descripcion nombra un personaje, objeto o marca reales, usa sus colores canonicos reconocibles. ' +
   'Si no estas seguro de los colores, pon confianza "baja" y en "pregunta" lo que necesitas saber; no inventes.'
-
-// Solo para una mascota: ademas pide el dibujo propio de 14x14 con su paleta y la posicion de la cara.
-export const IA_ART_SYSTEM =
-  ' ADEMAS cada elemento lleva la forma propia en pixel art de 32 bits: "palette": {"A":"#rrggbb", ...} (de 6 a 12 letras), ' +
-  '"art": arreglo de EXACTAMENTE 32 strings de EXACTAMENTE 32 caracteres; "." es vacio y cada letra es una clave de palette. ' +
-  'Calidad de pixel art profesional: silueta inmediatamente reconocible del personaje u objeto pedido (cuernos, orejas, casco, alas, armadura, etc.), ' +
-  'simetrica, ocupando unas 28x28 casillas centradas; contorno oscuro de 1 pixel; cada zona con 3 tonos (base, sombra, luz) y detalles internos (paneles, lineas, brillos); ' +
-  'colores canonicos fieles al original; sin dithering ni ruido. Deja la cara libre (sin ojos ni boca: se dibujan aparte, ojos 5x5 y boca 5x2) y da su posicion en ' +
-  '"cara": {"izq": columna izquierda del ojo izquierdo, "der": columna izquierda del ojo derecho, "fila": fila del borde superior de los ojos, "boca": columna izquierda de la boca, "bocaFila": fila de la boca}. ' +
-  'Los ojos deben caer dentro de la silueta (columnas 0-27, filas 2-26), separados al menos 6 columnas, y la boca debajo (fila hasta 29).'
 
 export type IaLook = AgentLook & { isSure: boolean; question: string }
 
