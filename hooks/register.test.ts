@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { actOf, bar, bigArt, moodOf, generateSet, lookFromSeed, parseDesign, photoCells, parseLooks, parseColor, pixelCells, scene, SETS, skin, uniqueLooks } from './sprites'
+import { actOf, animCells, fitPhoto, parseAnim, bar, bigArt, moodOf, generateSet, lookFromSeed, parseDesign, photoCells, parseLooks, parseColor, pixelCells, scene, SETS, skin, uniqueLooks } from './sprites'
 
 describe('actOf', () => {
   test('copiar y mover archivos', () => {
@@ -342,6 +342,7 @@ describe('referencias web', () => {
     expect(spawned).toContain('EVA-01 de Evangelion')
     expect(spawned).toContain('IMAGEN:')                 // pide una imagen real, que mire con Read, y la silueta predefinida basada en ella
     expect(spawned).toContain('"dragon"')
+    expect(spawned).toContain('ESCOGE LA MEJOR')       // reune varias candidatas y elige la mejor, no la primera
     expect(calls).toBe(0)
     spawned = ''
     expect((await run('ia rapido un cohete')).text).toContain('Rapida')   // solo Haiku
@@ -395,17 +396,26 @@ describe('foto ASCII', () => {
     on('agent.list', () => ({ value: [] }))
     const out = { cols: 4, rows: 3, chars: '@#%8*+. @#%8', colors: 'ff8800'.repeat(12) }
     let argv: readonly string[] = []
-    on('process.run', (_$, e) => { argv = e.argv; return { value: { exitCode: 0, stdout: JSON.stringify(out), stderr: '' } } as never })
+    let stdout = JSON.stringify(out)
+    on('process.run', (_$, e) => { argv = e.argv; return { value: { exitCode: 0, stdout, stderr: '' } } as never })
     const pane = await $.ui.mount({ plugin: 'mascotas', surface: 'terminal', component: 'Pane', requestId: 'mascotas', props: {} as never, viewport: { columns: 170, rows: 40 } })
     const run = (args: string) => $.command.run({ command: 'pets', args } as never)
     expect((await run('ascii')).text).toContain('Uso: /pets ascii')
     expect((await run('ascii detalle 40')).text).toContain('40 columnas')
-    expect((await run('ascii /x/eva.png EVA')).text).toContain('Mascota ASCII creada: EVA (4x3')
-    expect(argv.slice(-2)).toEqual(['/x/eva.png', '40'])
+    expect((await run('ascii /x/eva.png EVA')).text).toContain('Mascota foto creada: EVA (4x3')
+    expect(argv.slice(-4)).toEqual(['/x/eva.png', '40', 'busto', 'braille'])
     const rasters = await pane.findAll({ type: 'Raster' })
     expect(rasters.some(r => r.props.columns === 4 && r.props.rows === 3)).toBe(true)
     expect((await run('mis')).text).toContain('EVA: foto ascii')
     expect((await run('ascii off')).text).toContain('desactivada')
+    stdout = JSON.stringify({ cols: 2, rows: 1, chars: '  ', colors: '000000' + '000000', bg: 'ff0000' + '------' })
+    expect((await run('foto /x/eva.png Foto')).text).toContain('Mascota foto creada: Foto (2x1')
+    expect(argv.slice(-1)).toEqual(['celdas'])
+    expect((await pane.findAll({ type: 'Raster' })).some(r => r.props.columns === 2)).toBe(true)
+    stdout = JSON.stringify({ cols: 2, rows: 1, chars: '\u2580\u2584', colors: 'ff0000' + '00ff00', bg: '0000ff' + '000000' })
+    expect((await run('foto fino /x/eva.png Fino')).text).toContain('Mascota foto creada: Fino')
+    expect(argv.slice(-1)).toEqual(['fino'])
+    await run('ascii off')
     expect((await pane.findAll({ type: 'Raster' })).every(r => r.props.columns === 16)).toBe(true)
   })
 })
@@ -427,5 +437,70 @@ describe('diseno vectorial de la IA', () => {
     expect(base.columns * base.rows).toBe(128)
     expect(base.cells).not.toBe(pixelCells('think', 0, 'robot').cells)
     expect(new Set([0, 1, 2, 3].map(t => pixelCells('run', t, 'robot', '', 'ninguno', '', null, d).cells)).size).toBeGreaterThan(1)
+  })
+})
+
+describe('render sin rendijas (Warp)', () => {
+  test('celdas: una celda de fondo por par de pixeles, 16x8', () => {
+    const c = pixelCells('think', 0, 'cat', '', 'ninguno', '', null, null, true)
+    expect([c.columns, c.rows]).toEqual([16, 8])
+    const bytes = Uint8Array.from(atob(c.cells), ch => ch.charCodeAt(0))
+    const w = new Uint32Array(bytes.buffer)
+    expect(w.filter((_, i) => i % 3 === 0).every(cp => cp === 0x20)).toBe(true)   // solo espacios con color de fondo: ningun glifo de bloque
+  })
+
+  test('en Warp el pane dibuja la mascota en celdas (16 columnas, 8 filas); /pets render medios la deja de 8 filas', async ($, on) => {
+    mock.store(on, {})
+    mock.env(on, { TERM_PROGRAM: 'WarpTerminal' })
+    on('command.register', () => ({ value: { command: 'pets' } }))
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('agent.list', () => ({ value: [] }))
+    const pane = await $.ui.mount({ plugin: 'mascotas', surface: 'terminal', component: 'Pane', requestId: 'mascotas', props: {} as never, viewport: { columns: 200, rows: 50 } })
+    const run = (args: string) => $.command.run({ command: 'pets', args } as never)
+    const celdas = (await pane.findAll({ type: 'Raster' })).map(r => r.props.cells)
+    expect(celdas).toHaveLength(1)
+    expect((await run('render')).text).toContain('aqui: celdas')
+    await run('render medios')
+    const medios = (await pane.findAll({ type: 'Raster' })).map(r => r.props.cells)
+    expect(medios).toHaveLength(1)
+    expect(medios[0]).not.toBe(celdas[0])
+    expect((await run('render nada')).text).toContain('Uso: /pets render')
+  })
+})
+
+describe('arte ASCII animado', () => {
+  const frame = (a: string) => [a.padEnd(10, '.'), '#'.repeat(10), '==========', '++++++++++', '##########']
+  test('parseAnim valida cuadros y colores', () => {
+    const a = parseAnim({ frames: [frame('ab'), frame('cd')], colors: { '#': '#6b3fa0', '=': 'rojo' }, base: '#ffffff' })!
+    expect([a.cols, a.rows, a.frames.length]).toEqual([10, 5, 2])
+    expect(a.colors).toEqual({ '#': '#6b3fa0' })
+    expect(parseAnim({ frames: [frame('a')] })).toBeUndefined()
+    expect(parseAnim('x')).toBeUndefined()
+  })
+
+  test('animCells cambia de cuadro con el tick', () => {
+    const a = parseAnim({ frames: [frame('ab'), frame('cd')], colors: {}, base: '#ffffff' })!
+    expect(animCells(a, 'think', 0).cells).not.toBe(animCells(a, 'think', 1).cells)
+    expect([animCells(a, 'think', 0).columns, animCells(a, 'think', 0).rows]).toEqual([10, 5])
+  })
+})
+
+describe('gestos de la foto', () => {
+  const foto = { cols: 12, rows: 8, chars: '#'.repeat(96), colors: '808080'.repeat(96) }
+  test('al dormir aparece la z; despierta no', () => {
+    const celdas = (m: 'sleep' | 'think') => new Uint32Array(Uint8Array.from(atob(photoCells(foto, m, 0).cells), ch => ch.charCodeAt(0)).buffer).filter((_, i) => i % 3 === 0)
+    expect(celdas('sleep').some(cp => cp === 0x7a || cp === 0x5a)).toBe(true)
+    expect(celdas('think').some(cp => cp === 0x7a || cp === 0x5a)).toBe(false)
+  })
+})
+
+describe('foto que cabe completa', () => {
+  test('fitPhoto achica al alto pedido y conserva la proporcion', () => {
+    const foto = { cols: 60, rows: 40, chars: '#'.repeat(2400), colors: '808080'.repeat(2400) }
+    const f = fitPhoto(foto, 20)
+    expect([f.cols, f.rows]).toEqual([30, 20])
+    expect([...f.chars].length).toBe(600)
+    expect(f.colors.length).toBe(3600)
+    expect(fitPhoto(foto, 50)).toBe(foto)
   })
 })

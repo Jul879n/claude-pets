@@ -43,7 +43,10 @@ Después abre una sesión nueva (o `/reload-plugins`): el pane se abre solo. Con
 | `decir <nombre> <mensaje>` | Habla con un subagente por el nombre de su mascota (también `@Nombre mensaje` en el prompt); no pasa por el modelo |
 | `img <ruta o URL> [nombre]` | Convierte una imagen en mascota de 32x32, sin tokens (necesita `python3` y `sips`, macOS) |
 | `ia <descripción>` | Un subagente (Sonnet) busca una imagen real del personaje, la **mira y diseña la mascota desde cero** como formas vectoriales (elipses, triángulos, polígonos con sus colores) que el mod dibuja en pixel art con contorno, sombra, ojos y expresiones; la imagen convertida a 32x32 queda también en tu listado como `Nombre (img)`. Consume tokens. `ia rapido` usa solo Haiku; `web off` desactiva la búsqueda |
-| `ascii <ruta o URL> [nombre]` | Foto ASCII a color, muy detallada (una letra por celda con el color del pixel y animación), sin tokens; `ascii detalle <16-56>` ajusta el tamaño y `ascii off` vuelve al pixel art |
+| `ascii <ruta o URL> [nombre]` | Convierte la imagen en puntos braille de dos colores, del tamaño de una mascota (32 columnas por defecto), con gestos animados (z al dormir, corazones, `?`, `!`); sin tokens. `ascii letras <ruta>` usa letras de colores, `ascii cuerpo <ruta>` muestra la figura entera, `ascii detalle <16-120>` ajusta el tamaño y `ascii off` vuelve al pixel art |
+| `foto <ruta o URL> [nombre]` | Casi una imagen: cada celda es un color de fondo, sin costuras; sin tokens. `foto fino <ruta>` usa medios bloques (dos colores por celda, el doble de alto). Las fotos se achican solas para caber completas en el pane |
+| `ia ascii <descripción>` | Sonnet escoge la mejor imagen y el generador ASCII la convierte, animada. Consume tokens de Sonnet |
+| `render auto\|medios\|celdas` | En terminales como Warp, que dibujan los medios bloques con rendijas, `auto` lo detecta y usa celdas de color; `medios` y `celdas` lo fuerzan |
 | `estilo pixel\|ascii`, `angosto`, `calma`, `avisos`, `historial`, `editar`, `estado` | Opciones de visualización y utilidades |
 
 ## Desarrollo
@@ -53,7 +56,7 @@ claude plugin validate .
 claude plugin test .
 ```
 
-Estructura: `hooks/register.tsx` (eventos, comandos y pane), `hooks/sprites.ts` (formas, expresiones y animación), `hooks/img2art.ts` (conversión de imágenes), `types/index.d.ts` (contrato de estado).
+Estructura: `hooks/register.tsx` (eventos, comandos y pane), `hooks/sprites.ts` (formas, expresiones y animación), `hooks/img2art.ts` y `hooks/img2ascii.ts` (conversión de imágenes), `types/index.d.ts` (contrato de estado).
 
 ## Licencia
 

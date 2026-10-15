@@ -7,7 +7,7 @@ import { IMG2ASCII_PY } from './img2ascii'
 import type { IaLook } from './sprites'
 import {
   ACCESSORIES, COLORS, photoCells, KIND_COLOR, LABEL, PETS, SETS, actOf, ago, bar, bigArt, moodOf,
-  DESIGN_SPEC, IA_SYSTEM, compactArt, generateSet, iaPrompt, lookFromSeed, parseLooks, parseColor, pixelCells, randomSeed, scene, skin, uniqueLooks,
+  ASCII_SPEC, DESIGN_SPEC, fitPhoto, IA_SYSTEM, animCells, compactArt, generateSet, iaPrompt, lookFromSeed, parseLooks, parseColor, pixelCells, randomSeed, scene, skin, uniqueLooks,
 } from './sprites'
 
 const PANE = 'mascotas'
@@ -26,17 +26,18 @@ const MAX_COL = 30
 const LEFT_W = 34
 const PANE_ROWS = 18
 // Con una foto ASCII el pane pide mas alto para que quepa entera.
-const paneRows = () => (cfg.photo ? Math.min(34, cfg.photo.rows + 11) : PANE_ROWS)
+const effRender = () => (cfg.render === 'auto' ? detectedRender : cfg.render)
+const paneRows = () => (cfg.photo || cfg.anim ? Math.min(64, (cfg.photo ?? cfg.anim)!.rows + 11) : PANE_ROWS)
 const openArgs = () => ({ id: PANE, title: 'Mascotas', rows: paneRows() })
 
 const fresh = (): Live => ({ tools: 0, errors: 0, last: 0, since: Date.now(), by: {} })
-const defaults: Cfg = { on: true, pet: 'cat', name: '', color: '', accessory: 'ninguno', accent: '', custom: null, photo: null, design: null, asciiCols: 32, eyes: 'auto', set: '', style: 'pixel', narrow: false, web: true, calm: false, history: false, notify: true }
+const defaults: Cfg = { on: true, pet: 'cat', name: '', color: '', accessory: 'ninguno', accent: '', custom: null, photo: null, design: null, anim: null, asciiCols: 32, render: 'auto', eyes: 'auto', set: '', style: 'pixel', narrow: false, web: true, calm: false, history: false, notify: true }
 const initial: Model = { main: { ...fresh(), st: 'idle' }, agents: {}, tick: 0, timeline: [], summary: '', cfg: defaults, custom: {}, edit: false }
 const model = atom({ plugin: 'mascotas', key: 's' } as const, initial)
 
 const ICON = { running: '*', waiting: 'z', idle: 'z', pending: '.', completed: '+', failed: 'x', killed: 'x' } as const
 const COLOR = { running: '#60a5fa', waiting: '#fbbf24', idle: '#fbbf24', pending: '#9aa3b2', completed: '#4ade80', failed: '#f87171', killed: '#f87171' } as const
-const HINT = '<ascii <ruta|url> [nombre] | img <ruta|url> [nombre] | mis | ia web <descripcion> | usar <nombre> | ia <descripcion> | decir <nombre> <mensaje> | tipo <mascota> | nombre <texto> | color <#hex|nombre> | accesorio <x> | ojos <o.o> | set <nombre> | generar [texto] | estilo <pixel|ascii> | on | off | editar | reset>'
+const HINT = '<render <auto|medios|celdas> | foto <ruta|url> [nombre] | ascii <ruta|url> [nombre] | img <ruta|url> [nombre] | mis | ia web <descripcion> | usar <nombre> | ia <descripcion> | decir <nombre> <mensaje> | tipo <mascota> | nombre <texto> | color <#hex|nombre> | accesorio <x> | ojos <o.o> | set <nombre> | generar [texto] | estilo <pixel|ascii> | on | off | editar | reset>'
 const HELP = [
   '/pets tipo <cat|owl|robot|fox|dog|bunny|ghost>   cambia la mascota principal',
   '/pets nombre <texto>   /pets color <#rrggbb|naranja|rosa|...|auto>   /pets acento <color secundario|auto>   /pets accesorio <ninguno|sombrero|corona|lentes|corbata>',
@@ -47,17 +48,22 @@ const HELP = [
   '/pets ia <descripcion>   busca referencias en la web y dibuja con el modelo principal (/pets web off = solo Haiku)   /pets ia rapido <descripcion>   solo Haiku',
   '/pets ia set <nombre> <descripcion del equipo>   crea un set de 6 con Haiku',
   '/pets img <ruta o URL de una imagen> [nombre]   convierte una imagen en mascota de 32x32 (sin tokens)',
-  '/pets ascii <ruta o URL de una imagen> [nombre]   foto ASCII a color, muy detallada (sin tokens)   /pets ascii detalle <16-56>   /pets ascii off',
+  '/pets foto <ruta o URL de una imagen> [nombre]   casi una imagen: cada celda es un color de fondo, sin costuras (sin tokens; usa el mismo detalle que ascii)   /pets foto fino <ruta>   medios bloques con dos colores por celda (el doble de alto, puede mostrar lineas segun la terminal)',
+  '/pets ascii <ruta o URL de una imagen> [nombre]   foto en puntos braille de dos colores, del tamano de una mascota (sin tokens)   /pets ascii letras <ruta>   letras de colores   /pets ascii cuerpo <ruta>   /pets ascii detalle <16-120>   /pets ascii off',
   '/pets decir <nombre> <mensaje>   o  /pets <nombre> <mensaje>   o  @<nombre> <mensaje> en el prompt: habla con ese subagente',
+  '/pets render auto|medios|celdas   celdas = sin medios bloques (terminales como Warp los dibujan con rendijas); auto lo detecta',
+  '/pets ia ascii <descripcion>   Sonnet escoge la mejor imagen y el generador ASCII la convierte, animada (consume tokens)',
   '/pets editar (vista previa)   /pets on|off|abrir|cerrar   /pets angosto|calma|avisos|historial [ver]|estado|tipos',
 ].join('\n')
 
 let cfg = defaults
 let custom: Record<string, SetDef> = {}
+let detectedRender: 'medios' | 'celdas' = 'medios'   // 'celdas' donde los medios bloques salen con rendijas (Warp)
 let loaded = false   // las preferencias vienen del almacen del plugin; $.state se reinicia con cada sesion (p. ej. al aceptar un plan), las variables del modulo no
 let coleccion: Record<string, SavedLook> = {}
 // Investigaciones web en curso: agente de referencias -> lo que se quiere crear.
 const pendientes = new Map<string, string>()
+const pendientesAscii = new Map<string, string>()   // subagentes que dibujan arte ASCII animado
 let esperandoRecibo = 0   // resultados de esas investigaciones que aun llegaran al modelo principal (se consumen: no gastan tokens)
 let busyUntil = 0
 let watching = false
@@ -120,10 +126,10 @@ async function imagenAMascota($: EngineInterface, origen: string, nombre: string
 }
 
 // Convierte una imagen (ruta o URL) en una "foto ASCII" a color, muy detallada: python3 + sips; se valida lo que devuelven.
-async function fotoAAscii($: EngineInterface, origen: string, nombre: string): Promise<{ look?: SavedLook; error?: string }> {
-  let out: { cols?: number; rows?: number; chars?: string; colors?: string; error?: string }
+async function fotoAAscii($: EngineInterface, origen: string, nombre: string, cuerpo = false, modo: 'ascii' | 'celdas' | 'fino' | 'braille' = 'ascii', anchoCols = cfg.asciiCols): Promise<{ look?: SavedLook; error?: string }> {
+  let out: { cols?: number; rows?: number; chars?: string; colors?: string; bg?: string; error?: string }
   try {
-    const r = await $.process.run(['python3', '-I', '-c', IMG2ASCII_PY, origen, String(cfg.asciiCols)], { timeoutMs: 60000 })
+    const r = await $.process.run(['python3', '-I', '-c', IMG2ASCII_PY, origen, String(anchoCols), cuerpo ? 'cuerpo' : 'busto', modo], { timeoutMs: 60000 })
     if (r.exitCode !== 0) return { error: `No pude convertir la imagen: ${r.stderr.trim().split('\n').pop() || 'error desconocido'}` }
     out = JSON.parse(r.stdout)
   } catch (err) {
@@ -131,8 +137,9 @@ async function fotoAAscii($: EngineInterface, origen: string, nombre: string): P
   }
   const { cols, rows, chars, colors } = out
   if (out.error || !cols || !rows || !chars || !colors) return { error: out.error ?? 'La imagen no se pudo convertir.' }
-  if (chars.length !== cols * rows || colors.length !== cols * rows * 6 || !/^[0-9a-f]+$/i.test(colors)) return { error: 'La foto ASCII convertida no es valida.' }
-  return { look: { pet: cfg.pet, accessory: 'ninguno', color: '#808080', name: nombre, eyes: 'o.o', photo: { cols, rows, chars, colors } } }
+  if ([...chars].length !== cols * rows || colors.length !== cols * rows * 6 || !/^[0-9a-f]+$/i.test(colors)) return { error: 'La foto convertida no es valida.' }
+  if (out.bg !== undefined && (out.bg.length !== cols * rows * 6 || !/^[0-9a-f-]+$/i.test(out.bg))) return { error: 'La foto convertida no es valida.' }
+  return { look: { pet: cfg.pet, accessory: 'ninguno', color: '#808080', name: nombre, eyes: 'o.o', photo: { cols, rows, chars: [...chars].join(''), colors, bg: out.bg } } }
 }
 
 // Lanza un subagente (modelo principal, con busqueda web) que reune referencias; al terminar, turn.complete afina la mascota.
@@ -142,18 +149,50 @@ async function investigarWeb($: EngineInterface, descripcion: string): Promise<s
     subagentType: 'general-purpose',
     model: 'sonnet',   // el que mira la imagen y decide: un modelo con vision y buen criterio
     prompt: 'Eres un artista de pixel art. Necesito una mascota de este personaje u objeto: ' + JSON.stringify(descripcion.slice(0, 300)) +
-      '. PASO 1: consigue una imagen real del tema (idealmente pixel art o sprite; sirve cualquier PNG/JPG con el personaje bien visible y fondo liso): ' +
-      'busca en la web y, si hace falta, usa la API de Wikimedia Commons con curl ' +
+      '. PASO 1: reune VARIAS imagenes candidatas del tema (de 4 a 6, de fuentes distintas: sprites o pixel art profesional, arte oficial, wikis de fans con buena calidad, Wikimedia Commons, etc.). ' +
+      'Busca en la web y, si hace falta, usa la API de Wikimedia Commons con curl ' +
       '(https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=<tema>&gsrnamespace=6&prop=imageinfo&iiprop=url&iiurlwidth=480&format=json, campo thumburl) ' +
-      'o una URL directa de imagen (termina en .png, .jpg o .gif). Descargala con curl -sL a ~/.cache/claude-pets/refs/<nombre>.png (crea la carpeta; comprueba con el comando file que es una imagen). ' +
-      'PASO 2: MIRA la imagen con la herramienta Read y DISENA LA MASCOTA DESDE CERO basandote en ella (no uses una silueta generica): ' +
+      'o URLs directas de imagen (terminan en .png, .jpg o .gif). Descargalas con curl -sL a ~/.cache/claude-pets/refs/<nombre>-1.png, -2.png... (crea la carpeta; comprueba con el comando file que son imagenes). ' +
+      'NO te quedes con la primera: MIRA cada candidata con la herramienta Read y ESCOGE LA MEJOR segun estos criterios, en orden: (1) calidad profesional y buena resolucion, (2) el personaje completo y bien visible, de frente o 3/4, sin recortes, ' +
+      '(3) fondo liso o transparente, (4) colores fieles al personaje oficial, (5) sin marcas de agua, texto, collage ni varios personajes, (6) preferir pixel art limpio o arte oficial antes que dibujos de aficionados. Descarta las demas. ' +
+      'PASO 2: con la imagen ganadora DISENA LA MASCOTA DESDE CERO basandote en ella (no uses una silueta generica): ' +
       'recrea su silueta y sus colores reales como un diseno vectorial pequeno de 16x16. ' +
-      'PASO 3: responde UNICAMENTE (sin markdown) la linea `IMAGEN: <ruta absoluta>` (omitela si no conseguiste imagen) y debajo el arreglo JSON de un elemento. Cada elemento: ' + IA_SYSTEM.replace('Responde SOLO un arreglo JSON, sin texto ni markdown. ', '').replace(/^Eres un generador de mascotas de pixel art\. /, '') + ' ADEMAS: ' + DESIGN_SPEC,
+      'PASO 3: responde UNICAMENTE (sin markdown) la linea `IMAGEN: <ruta absoluta de la ganadora>` (omitela si no conseguiste ninguna) y debajo el arreglo JSON de un elemento. Cada elemento: ' + IA_SYSTEM.replace('Responde SOLO un arreglo JSON, sin texto ni markdown. ', '').replace(/^Eres un generador de mascotas de pixel art\. /, '') + ' ADEMAS: ' + DESIGN_SPEC,
   })
   const { agentId, deny } = res
   if (deny || !agentId) return `No pude lanzar la busqueda web${deny ? `: ${deny}` : ''}.`
   pendientes.set(agentId, descripcion)
   return 'Busco referencias en la web y dibujo la mascota con el modelo principal (puede tardar un par de minutos y consume tokens); la aplico al terminar.'
+}
+
+// /pets ia ascii: Sonnet reune candidatas y escoge la mejor imagen; el generador ASCII del mod la convierte (muy detallada, con animacion por cuadros: respiracion, brillo y glitch).
+async function dibujarAscii($: EngineInterface, descripcion: string): Promise<string> {
+  const res = await $.agent.spawn({
+    description: `Imagen para ASCII: ${descripcion.slice(0, 40)}`,
+    subagentType: 'general-purpose',
+    model: 'sonnet',
+    prompt: 'Necesito la mejor imagen de este personaje para convertirla en arte ASCII: ' + JSON.stringify(descripcion.slice(0, 300)) +
+      '. Reune de 4 a 6 candidatas (web, Wikimedia Commons con curl, URLs directas .png/.jpg), descargalas con curl -sL a ~/.cache/claude-pets/refs/<nombre>-N.png (crea la carpeta; comprueba con file) y MIRA cada una con Read. ' +
+      'ESCOGE LA MEJOR: personaje completo o busto de frente, fondo liso u oscuro, alto contraste y buena resolucion, colores fieles, sin marcas de agua ni texto, un solo personaje. ' +
+      'Responde UNICAMENTE `IMAGEN: <ruta absoluta de la ganadora>` y una linea con un nombre corto de maximo 12 letras: `NOMBRE: <nombre>`. Si no consigues ninguna imagen valida, responde `IMAGEN: ninguna`.',
+  })
+  const { agentId, deny } = res
+  if (deny || !agentId) return `No pude lanzar la busqueda${deny ? `: ${deny}` : ''}.`
+  pendientesAscii.set(agentId, descripcion)
+  return 'Sonnet escoge la mejor imagen y el generador ASCII la convierte (puede tardar un par de minutos; consume tokens de Sonnet); la aplico al terminar.'
+}
+
+async function aplicarAscii($: EngineInterface, descripcion: string, texto: string) {
+  const img = /IMAGEN:\s*(\/\S+)/.exec(texto)?.[1]
+  if (!img) { $.ui.toast('No se encontro una imagen valida; la mascota queda como estaba.'); return }
+  const nombre = (/NOMBRE:\s*([^\n]+)/.exec(texto)?.[1] ?? descripcion.split(/\s+/)[0]!).replace(/[^\p{L}\p{N} -]/gu, '').trim().slice(0, 12) || 'ASCII'
+  const { look, error } = await fotoAAscii($, img, nombre, false, 'braille', 32)
+  if (error || !look) { $.ui.toast(error ?? 'No pude convertir la imagen.'); return }
+  await respaldar($)
+  await guardarMascota($, look)
+  await setCfg($, { ...lookToCfg(look), anim: null })
+  if (cfg.on) await $.ui.open(openArgs())
+  $.ui.toast(`Mascota ASCII creada: ${look.name} (${look.photo!.cols}x${look.photo!.rows})`)
 }
 
 // Cuando vuelve el subagente (que miro la imagen y diseno la mascota desde cero): se aplica su diseno (o su silueta predefinida si no hubo diseno valido)
@@ -198,6 +237,7 @@ async function ensureLoaded($: EngineInterface) {
     if ((cfg.style as string) === 'tarjetas') cfg = { ...cfg, style: 'pixel' }
     custom = ((await $.store.get(STORE_SETS)) as Record<string, SetDef> | undefined) ?? {}
     coleccion = ((await $.store.get(STORE_COL)) as Record<string, SavedLook> | undefined) ?? {}
+    try { detectedRender = (await $.env.get('TERM_PROGRAM')) === 'WarpTerminal' ? 'celdas' : 'medios' } catch { /* sin entorno: medios bloques */ }
     loaded = true
   } catch {
     // se usan los valores por defecto y se reintenta en el siguiente evento
@@ -216,11 +256,11 @@ const setOf = (name: string, mine: Record<string, SetDef>): SetDef | undefined =
 // Espacios duros: el renderizador no debe recortar ni colapsar la sangria del arte ASCII.
 const nbsp = (line: string) => line.replace(/ /g, '\u00a0')
 
-const principal = (c: Cfg): SavedLook => ({ pet: c.pet, accessory: c.accessory, color: c.color || '#fbbf24', accent: c.accent || undefined, custom: c.custom ?? undefined, photo: c.photo ?? undefined, design: c.design ?? undefined, name: c.name, eyes: c.eyes === 'auto' ? 'o.o' : c.eyes })
+const principal = (c: Cfg): SavedLook => ({ pet: c.pet, accessory: c.accessory, color: c.color || '#fbbf24', accent: c.accent || undefined, custom: c.custom ?? undefined, photo: c.photo ?? undefined, design: c.design ?? undefined, anim: c.anim ?? undefined, name: c.name, eyes: c.eyes === 'auto' ? 'o.o' : c.eyes })
 
 // Lo que hay que escribir en la configuracion para vestir a la principal con una mascota guardada.
 const lookToCfg = (l: SavedLook): Partial<Cfg> => ({
-  pet: l.pet as Cfg['pet'], color: l.color, accent: l.accent ?? '', custom: l.custom ?? null, photo: l.photo ?? null, design: l.design ?? null,
+  pet: l.pet as Cfg['pet'], color: l.color, accent: l.accent ?? '', custom: l.custom ?? null, photo: l.photo ?? null, design: l.design ?? null, anim: l.anim ?? null,
   accessory: l.accessory as Cfg['accessory'], eyes: l.eyes, name: l.name,
 })
 
@@ -298,7 +338,7 @@ export const register: Register = on => {
         const pet = PETS.find(p => p === arg)
         if (!pet) return { text: `Uso: /pets tipo ${PETS.join('|')}` }
         await respaldar($)
-        await setCfg($, { pet, custom: null, photo: null, design: null })
+        await setCfg($, { pet, custom: null, photo: null, design: null, anim: null })
         return { text: `Mascota: ${pet}` }
       }
       case 'tipos':
@@ -331,27 +371,41 @@ export const register: Register = on => {
         await setCfg($, { eyes: arg })
         return { text: `Ojos: ${arg} (leer, ejecutar, error y dormir mantienen los suyos)` }
       }
+      case 'render': {
+        if (arg !== 'auto' && arg !== 'medios' && arg !== 'celdas') return { text: `Render actual: ${cfg.render}${cfg.render === 'auto' ? ` (aqui: ${detectedRender})` : ''}. Uso: /pets render auto|medios|celdas   (celdas = sin medios bloques, para terminales que los dibujan con rendijas, como Warp; el sprite ocupa el doble)` }
+        await setCfg($, { render: arg })
+        if (cfg.on) await $.ui.open(openArgs())
+        return { text: `Render: ${arg}${arg === 'auto' ? ` (aqui: ${detectedRender})` : ''}` }
+      }
+      case 'foto':
       case 'ascii': {
         if (arg === 'off') {
-          await setCfg($, { photo: null })
+          await setCfg($, { photo: null, anim: null })
           if (cfg.on) await $.ui.open(openArgs())
-          return { text: 'Foto ASCII desactivada: vuelve la mascota de pixel art.' }
+          return { text: 'Foto desactivada: vuelve la mascota de pixel art.' }
         }
         if (arg === 'detalle') {
           const cols = Math.round(Number(more[0]))
-          if (!(cols >= 16 && cols <= 56)) return { text: `Detalle actual: ${cfg.asciiCols} columnas. Uso: /pets ascii detalle <16-56> (mas columnas = mas detalle y mas alto el pane)` }
+          if (!(cols >= 16 && cols <= 120)) return { text: `Detalle actual: ${cfg.asciiCols} columnas. Uso: /pets ascii detalle <16-120> (mas columnas = mas detalle y mas alto el pane)` }
           await setCfg($, { asciiCols: cols })
           return { text: `Detalle: ${cols} columnas (se aplica a la proxima /pets ascii).` }
         }
-        const [, origen = '', ...nombre] = e.args.trim().split(/\s+/)
-        if (!origen) return { text: 'Uso: /pets ascii <ruta o URL de una imagen> [nombre]   foto ASCII a color, muy detallada (sin tokens)\n/pets ascii detalle <16-56>   /pets ascii off' }
-        const { look, error } = await fotoAAscii($, origen, (nombre.join(' ') || origen.split('/').pop()!.replace(/\.\w+$/, '')).slice(0, 12))
+        const words = e.args.trim().split(/\s+/).slice(1)
+        // /pets foto: celdas de color (casi una imagen, sin costuras); /pets foto fino: medios bloques con dos colores por celda; /pets ascii: letras
+        const fino = sub === 'foto' && words[0] === 'fino'
+        const letras = sub === 'ascii' && words[0] === 'letras'   // /pets ascii letras: caracteres de colores (mas grandes); por defecto puntos braille de dos colores, del tamano de una mascota
+        const modo = sub === 'ascii' ? (letras ? 'ascii' : 'braille') : fino ? 'fino' : 'celdas'
+        const rest1 = fino || letras ? words.slice(1) : words
+        const cuerpo = rest1[0] === 'cuerpo'   // cuerpo <ruta>: figura entera en vez de cabeza y torso
+        const [origen = '', ...nombre] = cuerpo ? rest1.slice(1) : rest1
+        if (!origen) return { text: 'Uso: /pets ascii <ruta o URL de una imagen> [nombre]   foto ASCII a color, muy detallada (sin tokens); una figura alta se recorta a cabeza y torso\n/pets ascii cuerpo <ruta> [nombre]   figura entera   /pets ascii detalle <16-120>   /pets ascii off' }
+        const { look, error } = await fotoAAscii($, origen, (nombre.join(' ') || origen.split('/').pop()!.replace(/\.\w+$/, '')).slice(0, 12), cuerpo, modo)
         if (error || !look) return { text: error ?? 'Sin resultado.' }
         await respaldar($)
         await guardarMascota($, look)
         await setCfg($, lookToCfg(look))
         if (cfg.on) await $.ui.open(openArgs())
-        return { text: `Mascota ASCII creada: ${look.name} (${look.photo!.cols}x${look.photo!.rows} caracteres a color). Sin costo de tokens.` }
+        return { text: `Mascota ${modo === 'ascii' ? 'ASCII' : 'foto'} creada: ${look.name} (${look.photo!.cols}x${look.photo!.rows} celdas a color). Sin costo de tokens.` }
       }
       case 'img': {
         const [, origen = '', ...nombre] = e.args.trim().split(/\s+/)
@@ -364,6 +418,11 @@ export const register: Register = on => {
         return { text: `Mascota creada desde la imagen: ${look.name} (${Object.keys(look.custom!.palette).length} colores). Sin costo de tokens.` }
       }
       case 'ia': {
+        if (arg === 'ascii') {
+          const desc = more.join(' ')
+          if (!desc.trim()) return { text: 'Uso: /pets ia ascii <descripcion>   (Sonnet escoge la mejor imagen y el generador ASCII la convierte, muy detallada y animada; consume tokens)' }
+          return { text: await dibujarAscii($, desc) }
+        }
         if (arg === 'web') {
           const desc = more.join(' ')
           if (!desc.trim()) return { text: 'Uso: /pets ia web <descripcion>   (busca referencias en internet con el modelo principal y luego Haiku dibuja)' }
@@ -388,7 +447,7 @@ export const register: Register = on => {
         if (error || !look) return { text: error ?? 'Sin resultado.' }
         await respaldar($)
         await guardarMascota($, look)
-        await setCfg($, { pet: look.pet as Cfg['pet'], color: look.color, accent: look.accent ?? '', custom: look.custom ?? null, photo: null, design: null, accessory: look.accessory as Cfg['accessory'], eyes: look.eyes, name: look.name })
+        await setCfg($, { pet: look.pet as Cfg['pet'], color: look.color, accent: look.accent ?? '', custom: look.custom ?? null, photo: null, design: null, anim: null, accessory: look.accessory as Cfg['accessory'], eyes: look.eyes, name: look.name })
         const colors = look.accent ? `${look.color} + ${look.accent}` : look.color
         const doubt = look.isSure ? '' : `\nNo estoy seguro de los colores${look.question ? `: ${look.question}` : ''}. Ajusta con /pets color <#hex|nombre> y /pets acento <#hex|nombre|auto>, o repite /pets ia con mas detalle (ej. los colores que quieres).`
         const web = ''
@@ -436,7 +495,7 @@ export const register: Register = on => {
         const look = lookFromSeed(seed, setOf(cfg.set, custom)?.pool)
         await respaldar($)
         await guardarMascota($, look)
-        await setCfg($, { pet: look.pet as Cfg['pet'], color: look.color, accessory: look.accessory as Cfg['accessory'], eyes: look.eyes, name: look.name, custom: null, photo: null, design: null })
+        await setCfg($, { pet: look.pet as Cfg['pet'], color: look.color, accessory: look.accessory as Cfg['accessory'], eyes: look.eyes, name: look.name, custom: null, photo: null, design: null, anim: null })
         return { text: `Mascota generada${rest ? ` desde "${rest}"` : ''}: ${look.name} (${look.pet}, ${look.accessory}, ${look.color}, ojos ${look.eyes}). Repite /pets generar para otra.` }
       }
       case 'set': {
@@ -468,7 +527,7 @@ export const register: Register = on => {
         return { text: 'Editor: vista previa de la principal en todos sus animos. /pets editar de nuevo para salir.' }
       case 'reset':
         await respaldar($)
-        await setCfg($, { pet: 'cat', name: '', color: '', accent: '', custom: null, photo: null, design: null, accessory: 'ninguno', eyes: 'auto' })
+        await setCfg($, { pet: 'cat', name: '', color: '', accent: '', custom: null, photo: null, design: null, anim: null, accessory: 'ninguno', eyes: 'auto' })
         return { text: 'Mascota restablecida.' }
       case 'estilo':
         const style = arg === 'ascii' || arg === 'tarjetas' ? 'ascii' : arg === 'pixel' ? 'pixel' : undefined
@@ -516,7 +575,7 @@ export const register: Register = on => {
 
   // El resultado del subagente de referencias ya se aplico aqui: no hace falta que el modelo principal lo lea.
   on('session.receive', async ($, e, next) => {
-    if (cfg.on && esperandoRecibo > 0 && (e.text.includes('"design"') || e.text.includes('IMAGEN:') || (e.text.includes('"palette"') && e.text.includes('"art"')) || (e.text.includes('"pet"') && e.text.includes('"color"')))) {
+    if (cfg.on && esperandoRecibo > 0 && (e.text.includes('"design"') || e.text.includes('"anim"') || e.text.includes('IMAGEN:') || (e.text.includes('"palette"') && e.text.includes('"art"')) || (e.text.includes('"pet"') && e.text.includes('"color"')))) {
       esperandoRecibo--
       return { consumed: 'resultado de mascota ya aplicado por el mod' }
     }
@@ -572,6 +631,15 @@ export const register: Register = on => {
 
   on('turn.complete', async ($, e, next) => {
     if (!cfg.on) return next(e)
+    const ascii = e.agentId ? pendientesAscii.get(e.agentId) : undefined
+    if (e.agentId && ascii !== undefined) {
+      pendientesAscii.delete(e.agentId)
+      esperandoRecibo++
+      const r = await next(e)
+      if (e.reason === 'answer' && r.text.trim()) await aplicarAscii($, ascii, r.text)
+      else $.ui.toast('El dibujo ASCII no devolvio resultado; la mascota queda como estaba.')
+      return r
+    }
     const wanted = e.agentId ? pendientes.get(e.agentId) : undefined
     if (e.agentId && wanted !== undefined) {
       pendientes.delete(e.agentId)
@@ -630,14 +698,16 @@ export const register: Register = on => {
     // rows es el alto de toda la pantalla; el pane pide PANE_ROWS (marco 2 + pie 1 fuera del cuerpo).
     const avail = Math.max(5, Math.min(paneRows(), Math.max(8, rows - 10)) - 3)
     // Sprites de pixel art de 16x16 (16 columnas x 8 filas): chibi de cabeza grande, siempre pequenos.
-    const photo = C.photo && RasterEl !== undefined ? C.photo : undefined   // foto ASCII: la principal puede ser mucho mas grande
-    const mainW = photo ? photo.cols : 16
-    const mainH = photo ? photo.rows : 8
-    const leftW = Math.max(LEFT_W, mainW + 4)
-    const cardW = CARD_W
+    const photo = C.photo && RasterEl !== undefined ? fitPhoto(C.photo, Math.max(6, avail - 8)) : undefined   // foto ASCII: se achica para que quepa completa en el pane
+    const anim = !photo && C.anim && RasterEl !== undefined ? C.anim : undefined   // arte ASCII animado dibujado por la IA
+    const celdas = effRender() === 'celdas'
     const spriteW = 16
     const spriteH = 8
-    const sprite = photo ? photoCells(photo, mood, tick) : usePixel ? pixelCells(mood, tick, C.pet, C.color, C.accessory, C.accent, C.custom, C.design) : undefined
+    const mainW = photo ? photo.cols : anim ? anim.cols : spriteW
+    const mainH = photo ? photo.rows : anim ? anim.rows : spriteH
+    const leftW = Math.max(LEFT_W, mainW + 4)
+    const cardW = CARD_W
+    const sprite = photo ? photoCells(photo, mood, tick) : anim ? animCells(anim, mood, tick) : usePixel ? pixelCells(mood, tick, C.pet, C.color, C.accessory, C.accent, C.custom, C.design, celdas) : undefined
     const perRow = Math.max(1, Math.floor((cols - leftW - 3) / (cardW + 1)))
     const compactH = usePixel ? spriteH + 2 : 5
     const capFull = perRow * Math.floor(avail / (usePixel ? spriteH + 2 : 7))
@@ -645,7 +715,7 @@ export const register: Register = on => {
     const asTable = agents.length > Math.min(MAX_CARDS, capCompact)
     const fullCards = agents.length <= capFull
     const cardH = fullCards ? 7 : compactH
-    const roomy = avail >= (usePixel || photo ? mainH + 7 : 10)
+    const roomy = avail >= (usePixel || photo || anim ? mainH + 8 : 10)
     const mine = setOf(C.set, custom)
     const shown = asTable ? agents.slice(-Math.max(1, avail - 2)) : agents.slice(-Math.max(1, Math.floor(avail / cardH)) * perRow)
     const looks = uniqueLooks(agents.slice(-30).map(a => a.id), mine)
@@ -689,6 +759,7 @@ export const register: Register = on => {
             </Box>
           )}
         </Box>
+        {sprite && <Text> </Text>}
         {mainW > 16 && main.act && main.st !== 'idle' && <Text>{main.act.target.slice(0, leftW - 4)}</Text>}
         {kind && sprite && <Text color={KIND_COLOR[kind]}>{scene(kind, tick).slice(0, leftW - 4)}</Text>}
         <Text color={mainColor}>{bar(main.tools)} {main.tools} herr. {ago(now - main.since)}</Text>
@@ -725,15 +796,15 @@ export const register: Register = on => {
           const face = fullCards ? full : compactArt(full, me.accessory)
           const doing = act ? <Text color={KIND_COLOR[act.kind]}>{LABEL[act.kind]} {act.target.slice(0, 8)}</Text> : <Text dimColor>{stuck ? 'sin actividad' : ' '}</Text>
           return (
-            <Box key={a.id} width={cardW} borderStyle="round" borderColor={COLOR[a.status]} paddingX={1} gap={1}>
+            <Box key={a.id} width={cardW} borderStyle="round" borderColor={COLOR[a.status]} paddingX={2} gap={1}>
               {usePixel && RasterEl ? (
-                <RasterEl key={`px-${a.id}`} {...pixelCells(amood, tick, me.pet, bad ? '#f87171' : me.color, me.accessory, bad ? '' : me.accent ?? '', me.custom, me.design)} />
+                <RasterEl key={`px-${a.id}`} {...pixelCells(amood, tick, me.pet, bad ? '#f87171' : me.color, me.accessory, bad ? '' : me.accent ?? '', me.custom, me.design, celdas)} />
               ) : (
                 <Box flexDirection="column">{face.map(l => <Text color={tone}>{nbsp(l)}</Text>)}</Box>
               )}
               <Box flexDirection="column">
                 <Text color={tone} weight="bold">{me.name.toUpperCase()} <Text color={COLOR[a.status]}>{ICON[a.status]} {a.status}</Text></Text>
-                {fullCards ? <Text>{a.description.slice(0, cardW - 4 - (usePixel ? spriteW : 9) - 1)}</Text> : act ? doing : <Text>{a.description.slice(0, cardW - 4 - (usePixel ? spriteW : 9) - 1)}</Text>}
+                {fullCards ? <Text>{a.description.slice(0, cardW - 6 - (usePixel ? spriteW : 9) - 1)}</Text> : act ? doing : <Text>{a.description.slice(0, cardW - 6 - (usePixel ? spriteW : 9) - 1)}</Text>}
                 {fullCards && doing}
                 <Text color={tone}>{bar(live?.tools ?? 0, 6)} {live?.tools ?? 0} {ago(now - (live?.since ?? now))}</Text>
               </Box>

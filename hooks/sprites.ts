@@ -1,4 +1,4 @@
-import type { Act, AsciiPhoto, CustomArt, Design, DesignPart, Pool, SavedLook, SetDef } from '../types'
+import type { Act, AsciiAnim, AsciiPhoto, CustomArt, Design, DesignPart, Pool, SavedLook, SetDef } from '../types'
 
 type Input = Record<string, unknown>
 
@@ -416,7 +416,7 @@ export const DESIGN_SPEC =
 type Face = { l: number; r: number; y: number; mx: number; my: number }
 const FACE: Face = { l: 3, r: 11, y: 6, mx: 7, my: 10 }   // ojos de 2x3 en las columnas 3 y 11, fila 6; boca de 2x1 en la fila 10
 
-export function pixelCells(mood: Mood, tick: number, pet: string, color = '', accessory = 'ninguno', accent = '', custom?: CustomArt | null, design?: Design | null): { columns: number; rows: number; cells: string } {
+export function pixelCells(mood: Mood, tick: number, pet: string, color = '', accessory = 'ninguno', accent = '', custom?: CustomArt | null, design?: Design | null, celdas = false): { columns: number; rows: number; cells: string } {
   const body = color ? parseInt(color.slice(1), 16) : BODY[pet] ?? 0xfbbf24
   const tint = mood === 'sleep' ? dim(body) : body   // dormida: mismo color, un poco apagado
   const grid = design ? designGrid(design, mood === 'sleep') : custom ? paintCustom(custom, mood === 'sleep') : paint((shapes[pet] ?? shapes.cat!)(N), tint, pet, accent ? parseInt(accent.slice(1), 16) : undefined)
@@ -466,11 +466,19 @@ export function pixelCells(mood: Mood, tick: number, pet: string, color = '', ac
   const MOVE: Record<Mood, { dx: number[]; dy: number[] }> = {
     think: { dx: [0, 1, 0, -1], dy: [0, 0, 0, 0] }, read: { dx: [-1, 1, -1, 1], dy: [0, 0, 0, 0] },
     write: { dx: [0, 0, 1, 0], dy: [0, 1, 0, 1] }, run: { dx: [-1, 1, -1, 1], dy: [0, 1, 0, 1] },
-    wait: { dx: [0, 0, 0, 0], dy: [0, 0, 1, 1] }, error: { dx: [-1, 1, -1, 1], dy: [0, 0, 0, 0] },
+    wait: { dx: [0, -1, 0, 1], dy: [0, 0, 0, 0] }, error: { dx: [-1, 1, -1, 1], dy: [0, 0, 0, 0] },
     sleep: { dx: [0, 0, 0, 0], dy: [1, 1, 0, 0] }, happy: { dx: [0, 0, 0, 0], dy: [0, -1, -1, 0] },
   }
   const mv = MOVE[mood], dxm = mv.dx[tick % 4]!, dym = 1 + mv.dy[tick % 4]!
   const moved = grid.map((_, y) => grid[y]!.map((__, x) => grid[y - dym]?.[x - dxm] ?? NONE))
+  if (celdas) {
+    // Sin glifos de medio bloque (algunas terminales, como Warp, los dibujan con rendijas): cada pixel es una celda de color de fondo (16x16 celdas).
+    // 16x16 pixeles -> 16x8 celdas (una celda mide ~1:2): cada celda mezcla los dos pixeles de su par de filas.
+    const mix = (a: number, b: number) => (a === NONE ? b : b === NONE ? a : (((((a >> 16) & 255) + ((b >> 16) & 255)) >> 1) << 16) | (((((a >> 8) & 255) + ((b >> 8) & 255)) >> 1) << 8) | (((a & 255) + (b & 255)) >> 1))
+    const wide: number[] = []
+    for (let y = 0; y < N; y += 2) for (let x = 0; x < N; x++) wide.push(0x20, 0, mix(moved[y]![x]!, moved[y + 1]![x]!))
+    return { columns: N, rows: N / 2, cells: (new Uint8Array(Uint32Array.from(wide).buffer) as unknown as { toBase64: () => string }).toBase64() }
+  }
   const words: number[] = []
   for (let r = 0; r < N / 2; r++) {
     for (let x = 0; x < N; x++) {
@@ -486,6 +494,23 @@ export function pixelCells(mood: Mood, tick: number, pet: string, color = '', ac
 // Misma escala de caracteres (de menos a mas "tinta") que usa el conversor de fotos ASCII.
 export const RAMP = ' .\'^",:;Il!i><~+_-?][}{1)(|/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$'
 
+// Achica una foto ASCII (por muestreo) para que quepa completa en `maxRows` filas; la terminal no permite cambiar el tamano de la fuente, asi que se reduce la rejilla.
+export function fitPhoto(photo: AsciiPhoto, maxRows: number): AsciiPhoto {
+  if (photo.rows <= maxRows) return photo
+  const f = Math.max(4, maxRows) / photo.rows
+  const rows = Math.max(4, maxRows), cols = Math.max(8, Math.round(photo.cols * f))
+  const chars: string[] = [], colors: string[] = [], bg: string[] = []
+  const src = [...photo.chars]
+  for (let y = 0; y < rows; y++) {
+    const sy = Math.min(photo.rows - 1, Math.floor(y / f))
+    for (let x = 0; x < cols; x++) {
+      const i = sy * photo.cols + Math.min(photo.cols - 1, Math.floor(x / f))
+      chars.push(src[i]!); colors.push(photo.colors.slice(i * 6, i * 6 + 6)); if (photo.bg) bg.push(photo.bg.slice(i * 6, i * 6 + 6))
+    }
+  }
+  return { cols, rows, chars: chars.join(''), colors: colors.join(''), bg: photo.bg ? bg.join('') : undefined }
+}
+
 // Foto ASCII -> celdas de Raster: cada caracter con su color, ajustado al animo (apagada al dormir, roja con error, mas viva al ejecutar),
 // con un leve brillo que cambia de caracter y el cuerpo entero moviendose (balanceo, vibracion, respiracion).
 export function photoCells(photo: AsciiPhoto, mood: Mood, tick: number): { columns: number; rows: number; cells: string } {
@@ -500,24 +525,89 @@ export function photoCells(photo: AsciiPhoto, mood: Mood, tick: number): { colum
     think: { dx: [0, 1, 0, 0], dy: [0, 0, 0, 0] }, read: { dx: [-1, 0, 1, 0], dy: [0, 0, 0, 0] },
     write: { dx: [0, 0, 0, 0], dy: [0, 1, 0, 1] }, run: { dx: [-1, 1, -1, 1], dy: [0, 0, 0, 0] },
     wait: { dx: [0, 0, 0, 0], dy: [0, 0, 1, 1] }, error: { dx: [-1, 1, -1, 1], dy: [0, 0, 0, 0] },
-    sleep: { dx: [0, 0, 0, 0], dy: [0, 0, 1, 1] }, happy: { dx: [0, 0, 0, 0], dy: [0, 0, 0, 0] },
+    sleep: { dx: [0, 0, 0, 0], dy: [0, 0, 1, 1] }, happy: { dx: [0, 0, 0, 0], dy: [0, -1, 0, -1] },
   }
   const mv = MOVE[mood]!, dx = mv.dx[tick % 4]!, dy = mv.dy[tick % 4]!
+  const pulse = [1, 1.25, 1, 0.8][tick % 4]!                       // los colores muy saturados (luces, acentos) laten
+  const glitch = mood === 'run' || mood === 'error'                 // filas que se desplazan un instante
   const shimmer = mood === 'think' || mood === 'read' || mood === 'write' || mood === 'run'
   const words: number[] = []
   for (let y = 0; y < rows; y++) {
     for (let x = 0; x < cols; x++) {
-      const sx = x - dx, sy = y - dy
+      const gx = glitch && (y * 7 + tick * 3) % 11 === 0 ? (tick % 2 ? 2 : -2) : 0
+      const sx = x - dx - gx, sy = y - dy
       const ch = sx >= 0 && sx < cols && sy >= 0 && sy < rows ? photo.chars[sy * cols + sx] : ' '
-      if (!ch || ch === ' ') { words.push(0x20, 0, NONE); continue }
+      const under = photo.bg ? photo.bg.slice((sy * cols + sx) * 6, (sy * cols + sx) * 6 + 6) : ''   // modo foto: color de fondo (celdas) o de la mitad de abajo (fino)
+      const bgc = under && !under.includes('-') ? tint(parseInt(under, 16)) : NONE
+      if (!ch || ch === ' ') { words.push(0x20, 0, bgc); continue }
       const i = RAMP.indexOf(ch)
       const alt = shimmer && i > 0 && (sx * 3 + sy * 5 + tick) % 13 === 0 ? RAMP[Math.min(RAMP.length - 1, i + 1)]! : ch
       const base = parseInt(photo.colors.slice((sy * cols + sx) * 6, (sy * cols + sx) * 6 + 6), 16)
-      words.push(alt.codePointAt(0)!, tint(Number.isNaN(base) ? 0x808080 : base), NONE)
+      const lit = Number.isNaN(base) ? 0x808080 : base
+      const vivid = mood !== 'sleep' && Math.max((lit >> 16) & 255, (lit >> 8) & 255, lit & 255) - Math.min((lit >> 16) & 255, (lit >> 8) & 255, lit & 255) > 90
+      const boost = (c: number) => (Math.min(255, ((c >> 16) & 255) * pulse) << 16) | (Math.min(255, ((c >> 8) & 255) * pulse) << 8) | Math.min(255, (c & 255) * pulse)
+      words.push(alt.codePointAt(0)!, tint(vivid ? boost(lit) : lit), bgc)
     }
+  }
+  // Gestos de mascota sobre la figura: zzz al dormir, corazones al terminar bien, ? al esperar, ! con error.
+  const gesto = { sleep: ['z', 'Z', 'z'], happy: ['♥', '♥', '♥'], wait: ['?', '?', '?'], error: ['!', '!', '!'] }[mood as 'sleep' | 'happy' | 'wait' | 'error']
+  if (gesto) {
+    const color = { sleep: 0x9ecbff, happy: 0xff7aa8, wait: 0xfacc15, error: 0xf87171 }[mood as 'sleep' | 'happy' | 'wait' | 'error']
+    const put = (x: number, y: number, ch: string) => {
+      if (x < 0 || x >= cols || y < 0 || y >= rows) return
+      words[(y * cols + x) * 3] = ch.codePointAt(0)!; words[(y * cols + x) * 3 + 1] = color
+    }
+    const ox = Math.max(2, cols - 8), n = mood === 'sleep' ? 3 : 1
+    for (let k = 0; k < n; k++) put(ox + k * 2 - (tick % 4 >> 1), Math.max(0, 3 - k * 2 - (tick % 4 >> 1)), gesto[(k + tick) % 3]!)
   }
   return { columns: cols, rows, cells: (new Uint8Array(Uint32Array.from(words).buffer) as unknown as { toBase64: () => string }).toBase64() }
 }
+
+// Valida una animacion ASCII de la IA: 2 a 8 cuadros del mismo tamano (se completan o recortan a cols x rows), solo ASCII imprimible, colores hex por caracter.
+export function parseAnim(raw: unknown): AsciiAnim | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const o = raw as Record<string, unknown>
+  if (!Array.isArray(o.frames) || o.frames.length < 2 || o.frames.length > 8) return undefined
+  const toRows = (f: unknown) => (Array.isArray(f) ? f.map(l => String(l)) : typeof f === 'string' ? f.split('\n') : [])
+  const frames = o.frames.map(toRows)
+  const rows = Math.min(28, Math.max(...frames.map(f => f.length)))
+  const cols = Math.min(56, Math.max(...frames.flat().map(l => [...l].length)))
+  if (rows < 4 || cols < 8) return undefined
+  const clean = (l: string) => [...l].slice(0, cols).map(ch => (ch >= ' ' && ch <= '~' ? ch : ' ')).join('').padEnd(cols, ' ')
+  const out = frames.map(f => Array.from({ length: rows }, (_, i) => clean(f[i] ?? '')).join(''))
+  if (out.every(f => f.trim() === '')) return undefined
+  const colors: Record<string, string> = {}
+  if (o.colors && typeof o.colors === 'object') {
+    for (const [k, v] of Object.entries(o.colors as Record<string, unknown>).slice(0, 16)) {
+      if (k.length === 1 && typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v)) colors[k] = v.toLowerCase()
+    }
+  }
+  const base = typeof o.base === 'string' && /^#[0-9a-f]{6}$/i.test(o.base) ? o.base.toLowerCase() : '#c9c9d1'
+  return { cols, rows, frames: out, colors, base }
+}
+
+// Animacion ASCII -> celdas de Raster: cuadro segun el tick (lento al esperar o dormir), color por caracter y tinte segun el animo.
+export function animCells(anim: AsciiAnim, mood: Mood, tick: number): { columns: number; rows: number; cells: string } {
+  const { cols, rows, frames, colors, base } = anim
+  const slow = mood === 'wait' || mood === 'sleep'
+  const frame = frames[(slow ? Math.floor(tick / 2) : tick) % frames.length]!
+  const tint = (c: number) => (mood === 'sleep' ? shade(c, 0.6) : mood === 'error' ? ((((c >> 16) & 255) * 0.5 + 127) << 16) | ((((c >> 8) & 255) * 0.5) << 8) | (((c & 255) * 0.5) | 0) : mood === 'happy' || mood === 'run' ? light(c, 0.15) : c)
+  const words: number[] = []
+  for (let i = 0; i < cols * rows; i++) {
+    const ch = frame[i]!
+    if (ch === ' ') { words.push(0x20, 0, NONE); continue }
+    words.push(ch.codePointAt(0)!, tint(parseInt((colors[ch] ?? base).slice(1), 16)), NONE)
+  }
+  return { columns: cols, rows, cells: (new Uint8Array(Uint32Array.from(words).buffer) as unknown as { toBase64: () => string }).toBase64() }
+}
+
+// Para el agente que dibuja arte ASCII animado.
+export const ASCII_SPEC =
+  '"anim": {"cols": ancho (maximo 48), "rows": alto (maximo 24), "frames": [de 4 a 6 cuadros; cada cuadro es un arreglo de `rows` strings de exactamente `cols` caracteres ASCII imprimibles], ' +
+  '"colors": {"caracter": "#rrggbb", ...} (un color por caracter, hasta 12), "base": "#rrggbb"}. Todos los cuadros miden igual. ' +
+  'Dibuja al personaje de frente (cabeza y torso), centrado, ultradetallado: caracteres densos (# @ % 8 W) para zonas oscuras o solidas, medios (+ = * o) para sombreado y ligeros (. : \' , ` -) para luces y bordes; ' +
+  'asigna a cada caracter el color real de esa parte (p. ej. # morado oscuro, = verde, + lila, O naranja). ' +
+  'Los cuadros deben animar al personaje: respiracion (el pecho sube y baja una fila), luces o visor que parpadean (cambia un caracter o su color) y la mandibula o la boca que se abre en un cuadro.'
 
 const NAMES = [
   'Michi', 'Luna', 'Toto', 'Nube', 'Pepa', 'Rocky', 'Kiwi', 'Mora', 'Bruno', 'Coco', 'Pipo', 'Lola', 'Simba', 'Tuna',
@@ -680,6 +770,7 @@ export function parseLooks(text: string, max = 12): IaLook[] {
       accent: parseColor(str(o.accent)) || undefined,
       custom: parseCustom(o),
       design: parseDesign(o.design),
+      anim: parseAnim(o.anim),
       isSure: str(o.confianza) !== 'baja',
       question: str(o.pregunta).slice(0, 200),
     })
