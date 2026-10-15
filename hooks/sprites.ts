@@ -1,4 +1,4 @@
-import type { Act, AsciiPhoto, CustomArt, Pool, SavedLook, SetDef } from '../types'
+import type { Act, AsciiPhoto, CustomArt, Design, DesignPart, Pool, SavedLook, SetDef } from '../types'
 
 type Input = Record<string, unknown>
 
@@ -338,17 +338,92 @@ function paintCustom(c: CustomArt, dimmed: boolean): number[][] {
   }))
 }
 
+// Un diseno vectorial de la IA -> pixeles: cada forma (ya reflejada si `m`) se pinta en orden; luego contorno oscuro y sombra abajo.
+function designGrid(d: Design, dimmed: boolean): number[][] {
+  const g: number[][] = Array.from({ length: N }, () => Array<number>(N).fill(NONE))
+  const inPoly = (px: number, py: number, pts: number[][]) => {
+    let inside = false
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const [xi, yi] = pts[i]!, [xj, yj] = pts[j]!
+      if (yi! > py !== yj! > py && px < ((xj! - xi!) * (py - yi!)) / (yj! - yi!) + xi!) inside = !inside
+    }
+    return inside
+  }
+  const draw = (part: DesignPart, flip: boolean) => {
+    const col = parseInt(part.c.slice(1), 16)
+    const fx = (x: number) => (flip ? N - x : x)
+    const pts = (part.p ?? []).map(([x, y]) => [fx(x!), y!])
+    const rx0 = flip ? N - ((part.x ?? 0) + (part.w ?? 0)) : part.x ?? 0
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+      const px = x + 0.5, py = y + 0.5
+      let hit = false
+      if (part.s === 'ellipse') hit = ((px - fx(part.cx ?? 0)) / (part.rx ?? 1)) ** 2 + ((py - (part.cy ?? 0)) / (part.ry ?? 1)) ** 2 <= 1
+      else if (part.s === 'rect') hit = px >= rx0 && px <= rx0 + (part.w ?? 0) && py >= (part.y ?? 0) && py <= (part.y ?? 0) + (part.h ?? 0)
+      else hit = pts.length >= 3 && inPoly(px, py, pts)
+      if (hit) g[y]![x] = col
+    }
+  }
+  for (const part of d.parts) { draw(part, false); if (part.m) draw(part, true) }
+  const at = (x: number, y: number) => g[y]?.[x] ?? NONE
+  const edge = (x: number, y: number) => [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => at(x + dx!, y + dy!) === NONE)
+  return g.map((row, y) => row.map((c, x) => {
+    if (c === NONE) return NONE
+    const v = edge(x, y) ? shade(c, 0.55) : y > N * 0.68 ? shade(c, 0.88) : c
+    return dimmed ? dim(v) : v
+  }))
+}
+
+// Valida lo que devuelve el modelo: formas conocidas, numeros finitos dentro del lienzo, colores hex y una cara dentro del cuerpo.
+export function parseDesign(raw: unknown): Design | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const o = raw as Record<string, unknown>
+  if (!Array.isArray(o.parts) || o.parts.length < 2 || o.parts.length > 40) return undefined
+  const num = (v: unknown, lo = -2, hi = 18) => (typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi ? v : undefined)
+  const parts: DesignPart[] = []
+  for (const p of o.parts) {
+    if (!p || typeof p !== 'object') continue
+    const q = p as Record<string, unknown>
+    const c = typeof q.c === 'string' && /^#[0-9a-f]{6}$/i.test(q.c) ? q.c : undefined
+    if (!c) continue
+    const m = q.m === true
+    if (q.s === 'ellipse') {
+      const cx = num(q.cx), cy = num(q.cy), rx = num(q.rx, 0.3, 12), ry = num(q.ry, 0.3, 12)
+      if (cx !== undefined && cy !== undefined && rx !== undefined && ry !== undefined) parts.push({ s: 'ellipse', c, m, cx, cy, rx, ry })
+    } else if (q.s === 'rect') {
+      const x = num(q.x), y = num(q.y), w = num(q.w, 0.3, 18), h = num(q.h, 0.3, 18)
+      if (x !== undefined && y !== undefined && w !== undefined && h !== undefined) parts.push({ s: 'rect', c, m, x, y, w, h })
+    } else if (q.s === 'tri' || q.s === 'poly') {
+      const pts = Array.isArray(q.p) ? q.p.map(pt => (Array.isArray(pt) ? [num(pt[0]), num(pt[1])] : [])) : []
+      if (pts.length >= 3 && pts.length <= 12 && pts.every(pt => pt[0] !== undefined && pt[1] !== undefined)) parts.push({ s: q.s, c, m, p: pts as number[][] })
+    }
+  }
+  const f = (o.face ?? {}) as Record<string, unknown>
+  const face = { l: num(f.l, 1, 12), r: num(f.r, 1, 12), y: num(f.y, 2, 11), mx: num(f.mx, 1, 13), my: num(f.my, 3, 13) }
+  if (parts.length < 2 || Object.values(face).some(v => v === undefined) || face.l! + 2 >= face.r!) return undefined
+  return { parts, face: { l: Math.round(face.l!), r: Math.round(face.r!), y: Math.round(face.y!), mx: Math.round(face.mx!), my: Math.round(face.my!) } }
+}
+
+// Para el agente que diseña: el formato del diseno vectorial, con un ejemplo.
+export const DESIGN_SPEC =
+  '"design": {"parts": [formas], "face": {"l": columna del ojo izquierdo, "r": columna del ojo derecho, "y": fila superior de los ojos, "mx": columna izquierda de la boca, "my": fila de la boca}}. ' +
+  'El lienzo es de 16x16 (x a la derecha, y hacia abajo, origen arriba a la izquierda; admite decimales). Formas, pintadas en orden (las ultimas quedan encima): ' +
+  '{"s":"ellipse","cx":8,"cy":9,"rx":5,"ry":4,"c":"#rrggbb"}, {"s":"rect","x":3,"y":2,"w":4,"h":3,"c":"#rrggbb"}, {"s":"tri","p":[[2,6],[3,1],[6,4]],"c":"#rrggbb"} o {"s":"poly","p":[[x,y],...],"c":"#rrggbb"} (3 a 12 puntos); ' +
+  'con "m":true la forma tambien se dibuja reflejada (x -> 16-x), asi lo simetrico se escribe una vez. ' +
+  'Disena desde cero el personaje con una silueta inmediatamente reconocible (cuernos, antenas, visera, armadura, orejas, alas...): primero la masa grande (cabeza o torso), despues rasgos y detalles, entre 6 y 28 formas y de 4 a 8 colores fieles a la referencia. ' +
+  'El mod agrega contorno oscuro y sombra solo. Deja un area lisa del color del cuerpo para la cara: los ojos miden 2x3 (columnas l y r, desde la fila y) y la boca 2x1 (mx, my). ' +
+  'Ejemplo (gato): {"name":"Michi","pet":"cat","color":"#fbbf24","design":{"parts":[{"s":"tri","p":[[1,6],[2,1],[6,4]],"c":"#fbbf24","m":true},{"s":"ellipse","cx":8,"cy":9,"rx":6.5,"ry":5,"c":"#fbbf24"},{"s":"ellipse","cx":8,"cy":11.5,"rx":3,"ry":1.8,"c":"#fde68a"}],"face":{"l":4,"r":10,"y":7,"mx":7,"my":11}}}.'
+
 type Face = { l: number; r: number; y: number; mx: number; my: number }
 const FACE: Face = { l: 3, r: 11, y: 6, mx: 7, my: 10 }   // ojos de 2x3 en las columnas 3 y 11, fila 6; boca de 2x1 en la fila 10
 
-export function pixelCells(mood: Mood, tick: number, pet: string, color = '', accessory = 'ninguno', accent = '', custom?: CustomArt | null): { columns: number; rows: number; cells: string } {
+export function pixelCells(mood: Mood, tick: number, pet: string, color = '', accessory = 'ninguno', accent = '', custom?: CustomArt | null, design?: Design | null): { columns: number; rows: number; cells: string } {
   const body = color ? parseInt(color.slice(1), 16) : BODY[pet] ?? 0xfbbf24
   const tint = mood === 'sleep' ? dim(body) : body   // dormida: mismo color, un poco apagado
-  const grid = custom ? paintCustom(custom, mood === 'sleep') : paint((shapes[pet] ?? shapes.cat!)(N), tint, pet, accent ? parseInt(accent.slice(1), 16) : undefined)
+  const grid = design ? designGrid(design, mood === 'sleep') : custom ? paintCustom(custom, mood === 'sleep') : paint((shapes[pet] ?? shapes.cat!)(N), tint, pet, accent ? parseInt(accent.slice(1), 16) : undefined)
   const put = (x: number, y: number, c: number) => { if (grid[y] && x >= 0 && x < N) grid[y]![x] = c }
   const block = (x: number, y: number, w: number, h: number, c: number) => { for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) put(x + i, y + j, c) }
-  const hasFace = !custom || !!custom.face
-  const f: Face = custom?.face ? { l: Math.round(custom.face.l / 2), r: Math.round(custom.face.r / 2), y: Math.round(custom.face.y / 2), mx: Math.round(custom.face.mx / 2), my: Math.round(custom.face.my / 2) } : FACE
+  const hasFace = design !== null && design !== undefined || !custom || !!custom.face
+  const f: Face = design ? design.face : custom?.face ? { l: Math.round(custom.face.l / 2), r: Math.round(custom.face.r / 2), y: Math.round(custom.face.y / 2), mx: Math.round(custom.face.mx / 2), my: Math.round(custom.face.my / 2) } : FACE
   const E = f.y, MX = f.mx, MY = f.my
   const fur = tint
   const pink = 0xf472b6
@@ -365,7 +440,7 @@ export function pixelCells(mood: Mood, tick: number, pet: string, color = '', ac
     else if (mood === 'error') both(x => { block(x, E, 2, 3, EYE); put(x + 1, E + 1, WHITE) })           // ojos en X
     else if (mood === 'happy') both((x, r) => { put(x, r ? E : E + 1, EYE); put(x + 1, r ? E + 1 : E, EYE) }) // ojos sonrientes
     else both(x => block(x, E + 2, 2, 1, EYE))                                                           // dormida: ojos cerrados
-    if (!custom && pet !== 'robot') block(MX, MY - 1, 2, 1, 0x7c2d12)                                    // nariz
+    if (!custom && !design && pet !== 'robot') block(MX, MY - 1, 2, 1, 0x7c2d12)                                    // nariz
     const dark = shade(body, 0.3)
     if (mood === 'run') block(MX, MY, 2, 2, dark)
     else if (mood === 'error') { block(MX, MY, 2, 1, dark); put(MX - 1, MY + 1, dark); put(MX + 2, MY + 1, dark) }
@@ -376,8 +451,8 @@ export function pixelCells(mood: Mood, tick: number, pet: string, color = '', ac
     else block(MX, MY, 2, 1, dark)
   }
   if (mood === 'error' || mood === 'wait') { put(14, 2, 0x93c5fd); block(13, 3, 3, 2, 0x60a5fa); put(14, 5, 0x3b82f6) }   // gota de sudor
-  if (mood === 'sleep' && tick % 4 < 2) { block(11, 0, 4, 1, 0x93c5fd); put(13, 1, 0x93c5fd); put(12, 2, 0x93c5fd); block(11, 3, 4, 1, 0x93c5fd) }   // "z"
-  if (!custom) {
+  if (mood === 'sleep' && tick % 4 < 2) { block(11, 0, 4, 1, 0x93c5fd); put(14, 1, 0x93c5fd); put(13, 2, 0x93c5fd); put(12, 3, 0x93c5fd); block(11, 4, 4, 1, 0x93c5fd) }   // "z" de 4x5
+  if (!custom && !design) {
     if (accessory === 'sombrero') { block(4, 0, 8, 3, 0xdc2626); block(2, 3, 12, 1, 0x7f1d1d); put(5, 1, 0xf87171) }
     if (accessory === 'corona') { for (const x of [3, 6, 9, 12]) put(x, 0, 0xfacc15); block(3, 1, 11, 2, 0xfacc15); put(5, 2, 0xdc2626); put(8, 2, 0x3b82f6); put(11, 2, 0x22c55e) }
     if (accessory === 'lentes') {
@@ -604,6 +679,7 @@ export function parseLooks(text: string, max = 12): IaLook[] {
       eyes: [...eyes].length === 3 ? eyes : 'o.o',
       accent: parseColor(str(o.accent)) || undefined,
       custom: parseCustom(o),
+      design: parseDesign(o.design),
       isSure: str(o.confianza) !== 'baja',
       question: str(o.pregunta).slice(0, 200),
     })

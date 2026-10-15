@@ -42,7 +42,7 @@ Después abre una sesión nueva (o `/reload-plugins`): el pane se abre solo. Con
 | `mis`, `usar`, `guardar`, `quitar` | Tu listado de mascotas (lo generado se guarda solo) |
 | `decir <nombre> <mensaje>` | Habla con un subagente por el nombre de su mascota (también `@Nombre mensaje` en el prompt); no pasa por el modelo |
 | `img <ruta o URL> [nombre]` | Convierte una imagen en mascota de 32x32, sin tokens (necesita `python3` y `sips`, macOS) |
-| `ia <descripción>` | Un subagente (Sonnet) busca una imagen real del personaje, la mira y elige la silueta predefinida más parecida con los colores de la imagen; la imagen convertida a 32x32 queda también en tu listado como `Nombre (img)`. Consume tokens. `ia rapido` usa solo Haiku; `web off` desactiva la búsqueda |
+| `ia <descripción>` | Un subagente (Sonnet) busca una imagen real del personaje, la **mira y diseña la mascota desde cero** como formas vectoriales (elipses, triángulos, polígonos con sus colores) que el mod dibuja en pixel art con contorno, sombra, ojos y expresiones; la imagen convertida a 32x32 queda también en tu listado como `Nombre (img)`. Consume tokens. `ia rapido` usa solo Haiku; `web off` desactiva la búsqueda |
 | `ascii <ruta o URL> [nombre]` | Foto ASCII a color, muy detallada (una letra por celda con el color del pixel y animación), sin tokens; `ascii detalle <16-56>` ajusta el tamaño y `ascii off` vuelve al pixel art |
 | `estilo pixel\|ascii`, `angosto`, `calma`, `avisos`, `historial`, `editar`, `estado` | Opciones de visualización y utilidades |
 

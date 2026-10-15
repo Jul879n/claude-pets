@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { actOf, bar, bigArt, moodOf, generateSet, lookFromSeed, photoCells, parseLooks, parseColor, pixelCells, scene, SETS, skin, uniqueLooks } from './sprites'
+import { actOf, bar, bigArt, moodOf, generateSet, lookFromSeed, parseDesign, photoCells, parseLooks, parseColor, pixelCells, scene, SETS, skin, uniqueLooks } from './sprites'
 
 describe('actOf', () => {
   test('copiar y mover archivos', () => {
@@ -407,5 +407,25 @@ describe('foto ASCII', () => {
     expect((await run('mis')).text).toContain('EVA: foto ascii')
     expect((await run('ascii off')).text).toContain('desactivada')
     expect((await pane.findAll({ type: 'Raster' })).every(r => r.props.columns === 16)).toBe(true)
+  })
+})
+
+describe('diseno vectorial de la IA', () => {
+  const ok = { parts: [{ s: 'ellipse', cx: 8, cy: 9, rx: 5, ry: 4, c: '#6b3fa0' }, { s: 'tri', p: [[7, 4], [8, 0], [9, 4]], c: '#f4d03f', m: true }], face: { l: 5, r: 9, y: 7, mx: 7, my: 11 } }
+  test('parseDesign acepta un diseno valido y descarta los invalidos', () => {
+    expect(parseDesign(ok)?.parts).toHaveLength(2)
+    expect(parseDesign({ ...ok, parts: [ok.parts[0]] })).toBeUndefined()                        // muy pocas formas
+    expect(parseDesign({ ...ok, face: { ...ok.face, l: 9, r: 5 } })).toBeUndefined()            // ojos al reves
+    expect(parseDesign({ ...ok, parts: [ok.parts[0], { s: 'ellipse', cx: 99, cy: 9, rx: 5, ry: 4, c: '#6b3fa0' }] })).toBeUndefined() // una forma fuera del lienzo se descarta
+    expect(parseDesign({ ...ok, parts: [ok.parts[0], { s: 'rect', x: 1, y: 1, w: 2, h: 2, c: 'rojo' }] })).toBeUndefined()           // color invalido
+    expect(parseDesign('x')).toBeUndefined()
+    expect(parseLooks(JSON.stringify([{ name: 'D', pet: 'robot', color: '#6b3fa0', design: ok }]))[0]!.design).toBeDefined()
+  })
+  test('el diseno se dibuja, se refleja y se mueve', () => {
+    const d = parseDesign(ok)!
+    const base = pixelCells('think', 0, 'robot', '', 'ninguno', '', null, d)
+    expect(base.columns * base.rows).toBe(128)
+    expect(base.cells).not.toBe(pixelCells('think', 0, 'robot').cells)
+    expect(new Set([0, 1, 2, 3].map(t => pixelCells('run', t, 'robot', '', 'ninguno', '', null, d).cells)).size).toBeGreaterThan(1)
   })
 })
