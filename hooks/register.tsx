@@ -5,14 +5,14 @@ import type { Cfg, Live, Model, SavedLook, SetDef } from '../types'
 import { IMG2ART_PY } from './img2art'
 import { IMG2ASCII_PY } from './img2ascii'
 import { VENTANA_PY, ventanaOsa } from './ventana'
-import type { IaLook } from './sprites'
+import type { IaLook, Mood } from './sprites'
 import {
   ACCESSORIES, COLORS, photoCells, KIND_COLOR, LABEL, PETS, SETS, actOf, ago, bar, bigArt, moodOf,
-  ASCII_SPEC, DESIGN_SPEC, fitPhoto, IA_SYSTEM, animCells, compactArt, generateSet, iaPrompt, lookFromSeed, parseLooks, parseColor, pixelCells, randomSeed, scene, skin, uniqueLooks,
+  ASCII_SPEC, DESIGN_SPEC, SPRITE_COLS, SPRITE_ROWS, fitPhoto, IA_SYSTEM, animCells, compactArt, generateSet, iaPrompt, lookFromSeed, parseLooks, parseColor, pixelCells, randomSeed, scene, skin, uniqueLooks,
 } from './sprites'
 
 const PANE = 'mascotas'
-const TICK_MS = 250
+const TICK_MS = 125
 const IDLE_MS = 8000
 const STUCK_MS = 30000
 const MAX_AGENTS = 50
@@ -29,16 +29,17 @@ const PANE_ROWS = 18
 // Con una foto ASCII el pane pide mas alto para que quepa entera.
 const effRender = () => (cfg.render === 'auto' ? detectedRender : cfg.render)
 const paneRows = () => (cfg.photo || cfg.anim ? Math.min(64, (cfg.photo ?? cfg.anim)!.rows + 11) : PANE_ROWS)
+const MOOD_ES: Record<Mood, string> = { think: 'pensando', read: 'leyendo', write: 'escribiendo', run: 'ejecutando', wait: 'esperando', error: 'error', sleep: 'durmiendo', happy: 'contenta' }
 const openArgs = () => ({ id: PANE, title: 'Mascotas', rows: paneRows() })
 
 const fresh = (): Live => ({ tools: 0, errors: 0, last: 0, since: Date.now(), by: {} })
 const defaults: Cfg = { on: true, pet: 'cat', name: '', color: '', accessory: 'ninguno', accent: '', custom: null, photo: null, design: null, anim: null, asciiCols: 40, src: '', render: 'auto', eyes: 'auto', set: '', style: 'pixel', narrow: false, web: true, calm: false, history: false, notify: true }
-const initial: Model = { main: { ...fresh(), st: 'idle' }, agents: {}, tick: 0, timeline: [], summary: '', cfg: defaults, custom: {}, edit: false }
+const initial: Model = { main: { ...fresh(), st: 'idle' }, agents: {}, tick: 0, timeline: [], summary: '', cfg: defaults, custom: {}, edit: false, gallery: false }
 const model = atom({ plugin: 'mascotas', key: 's' } as const, initial)
 
 const ICON = { running: '*', waiting: 'z', idle: 'z', pending: '.', completed: '+', failed: 'x', killed: 'x' } as const
 const COLOR = { running: '#60a5fa', waiting: '#fbbf24', idle: '#fbbf24', pending: '#9aa3b2', completed: '#4ade80', failed: '#f87171', killed: '#f87171' } as const
-const HINT = '<ventana [ruta] | render <auto|medios|celdas> | foto <ruta|url> [nombre] | ascii <ruta|url> [nombre] | img <ruta|url> [nombre] | mis | ia web <descripcion> | usar <nombre> | ia <descripcion> | decir <nombre> <mensaje> | tipo <mascota> | nombre <texto> | color <#hex|nombre> | accesorio <x> | ojos <o.o> | set <nombre> | generar [texto] | estilo <pixel|ascii> | on | off | editar | reset>'
+const HINT = '<ventana [ruta] | render <auto|medios|celdas> | foto <ruta|url> [nombre] | ascii <ruta|url> [nombre] | img <ruta|url> [nombre] | mis | ia web <descripcion> | usar <nombre> | ia <descripcion> | decir <nombre> <mensaje> | tipo <mascota> | nombre <texto> | color <#hex|nombre> | accesorio <x> | ojos <o.o> | set <nombre> | generar [texto] | estilo <pixel|ascii> | on | off | editar | galeria | reset>'
 const HELP = [
   '/pets tipo <cat|owl|robot|fox|dog|bunny|ghost>   cambia la mascota principal',
   '/pets nombre <texto>   /pets color <#rrggbb|naranja|rosa|...|auto>   /pets acento <color secundario|auto>   /pets accesorio <ninguno|sombrero|corona|lentes|corbata>',
@@ -55,12 +56,14 @@ const HELP = [
   '/pets render auto|medios|celdas   celdas = sin medios bloques (terminales como Warp los dibujan con rendijas); auto lo detecta',
   '/pets ia ascii <descripcion>   Sonnet escoge la mejor imagen y el generador ASCII la convierte, animada (consume tokens)',
   '/pets ventana [ruta]   el ASCII ultradetallado en una ventana aparte de Terminal con fuente diminuta, animado   /pets ventana off',
+  '/pets galeria   las 9 mascotas animadas en todos sus animos (ejemplos)',
   '/pets editar (vista previa)   /pets on|off|abrir|cerrar   /pets angosto|calma|avisos|historial [ver]|estado|tipos',
 ].join('\n')
 
 let cfg = defaults
 let custom: Record<string, SetDef> = {}
 let detectedRender: 'medios' | 'celdas' = 'medios'   // 'celdas' donde los medios bloques salen con rendijas (Warp)
+let showcase = false   // galeria o editor abiertos: animan a todo ritmo aunque no haya actividad
 let loaded = false   // las preferencias vienen del almacen del plugin; $.state se reinicia con cada sesion (p. ej. al aceptar un plan), las variables del modulo no
 let coleccion: Record<string, SavedLook> = {}
 // Investigaciones web en curso: agente de referencias -> lo que se quiere crear.
@@ -158,7 +161,7 @@ async function investigarWeb($: EngineInterface, descripcion: string): Promise<s
       'NO te quedes con la primera: MIRA cada candidata con la herramienta Read y ESCOGE LA MEJOR segun estos criterios, en orden: (1) calidad profesional y buena resolucion, (2) el personaje completo y bien visible, de frente o 3/4, sin recortes, ' +
       '(3) fondo liso o transparente, (4) colores fieles al personaje oficial, (5) sin marcas de agua, texto, collage ni varios personajes, (6) preferir pixel art limpio o arte oficial antes que dibujos de aficionados. Descarta las demas. ' +
       'PASO 2: con la imagen ganadora DISENA LA MASCOTA DESDE CERO basandote en ella (no uses una silueta generica): ' +
-      'recrea su silueta y sus colores reales como un diseno vectorial pequeno de 16x16. ' +
+      'recrea su silueta y sus colores reales como un diseno vectorial pequeno de 16x16, con sus cuadros de animacion ("frames"). ' +
       'PASO 3: responde UNICAMENTE (sin markdown) la linea `IMAGEN: <ruta absoluta de la ganadora>` (omitela si no conseguiste ninguna) y debajo el arreglo JSON de un elemento. Cada elemento: ' + IA_SYSTEM.replace('Responde SOLO un arreglo JSON, sin texto ni markdown. ', '').replace(/^Eres un generador de mascotas de pixel art\. /, '') + ' ADEMAS: ' + DESIGN_SPEC,
   })
   const { agentId, deny } = res
@@ -270,7 +273,10 @@ async function ensureLoaded($: EngineInterface) {
     if ((cfg.style as string) === 'tarjetas') cfg = { ...cfg, style: 'pixel' }
     custom = ((await $.store.get(STORE_SETS)) as Record<string, SetDef> | undefined) ?? {}
     coleccion = ((await $.store.get(STORE_COL)) as Record<string, SavedLook> | undefined) ?? {}
-    try { detectedRender = (await $.env.get('TERM_PROGRAM')) === 'WarpTerminal' ? 'celdas' : 'medios' } catch { /* sin entorno: medios bloques */ }
+    try {
+      const term = await $.env.get('TERM_PROGRAM')
+      detectedRender = term === 'WarpTerminal' ? 'celdas' : 'medios'
+    } catch { /* sin entorno: medios bloques */ }
     loaded = true
   } catch {
     // se usan los valores por defecto y se reintenta en el siguiente evento
@@ -334,13 +340,13 @@ export const register: Register = on => {
     })
     if (cfg.on) $.ui.open(openArgs()).catch(() => undefined)
     timer?.cancel()
-    // Con actividad (herramientas o agentes vivos) las mascotas se mueven 4 veces por segundo; en reposo respiran 1 vez por segundo.
+    // Con actividad (herramientas o agentes vivos) las mascotas se mueven 8 veces por segundo (tambien con la galeria o el editor abiertos); en reposo respiran 1 vez por segundo.
     timer = $.clock.every(TICK_MS, () => {
       if (!cfg.on) return
       n++
       const active = watching || Date.now() <= busyUntil
-      if (!cfg.calm && (active || n % 4 === 0)) void update($, model, m => ({ ...m, tick: m.tick + 1 }))
-      if (active && n % 20 === 0) void watch($)
+      if (!cfg.calm && (active || showcase || n % 8 === 0)) void update($, model, m => ({ ...m, tick: m.tick + 1 }))
+      if (active && n % 40 === 0) void watch($)
     })
     return next(e)
   })
@@ -413,7 +419,7 @@ export const register: Register = on => {
         return { text: await abrirVentana($, more.length ? [arg, ...more].join(' ') : arg || cfg.src) }
       }
       case 'render': {
-        if (arg !== 'auto' && arg !== 'medios' && arg !== 'celdas') return { text: `Render actual: ${cfg.render}${cfg.render === 'auto' ? ` (aqui: ${detectedRender})` : ''}. Uso: /pets render auto|medios|celdas   (celdas = sin medios bloques, para terminales que los dibujan con rendijas, como Warp; el sprite ocupa el doble)` }
+        if (arg !== 'auto' && arg !== 'medios' && arg !== 'celdas') return { text: `Render actual: ${cfg.render}${cfg.render === 'auto' ? ` (aqui: ${detectedRender})` : ''}. Uso: /pets render auto|medios|celdas   (celdas = sin medios bloques, para terminales que los dibujan con rendijas, como Warp)` }
         await setCfg($, { render: arg })
         if (cfg.on) await $.ui.open(openArgs())
         return { text: `Render: ${arg}${arg === 'auto' ? ` (aqui: ${detectedRender})` : ''}` }
@@ -564,9 +570,20 @@ export const register: Register = on => {
         await setCfg($, { set: arg })
         return { text: `Set activo: ${arg}` }
       }
-      case 'editar':
-        await update($, model, m => ({ ...m, edit: !m.edit }))
+      case 'editar': {
+        await update($, model, m => ({ ...m, edit: !m.edit, gallery: false }))
+        const next = await read($, model)
+        showcase = next.edit || next.gallery
+        if (cfg.on) await $.ui.open(next.edit ? { ...openArgs(), rows: Math.max(paneRows(), 20) } : openArgs())
         return { text: 'Editor: vista previa de la principal en todos sus animos. /pets editar de nuevo para salir.' }
+      }
+      case 'galeria': {
+        await update($, model, m => ({ ...m, gallery: !m.gallery, edit: false }))
+        const next = await read($, model)
+        showcase = next.edit || next.gallery
+        if (cfg.on) await $.ui.open(next.gallery ? { ...openArgs(), rows: Math.max(paneRows(), 20) } : openArgs())
+        return { text: 'Galeria: las 9 mascotas base animadas, cambian de animo cada 4 s. /pets galeria de nuevo para salir.' }
+      }
       case 'reset':
         await respaldar($)
         await setCfg($, { pet: 'cat', name: '', color: '', accent: '', custom: null, photo: null, design: null, anim: null, accessory: 'ninguno', eyes: 'auto' })
@@ -742,17 +759,23 @@ export const register: Register = on => {
     const stacked = narrow || cols < 60
     // rows es el alto de toda la pantalla; el pane pide PANE_ROWS (marco 2 + pie 1 fuera del cuerpo).
     const avail = Math.max(5, Math.min(paneRows(), Math.max(8, rows - 10)) - 3)
-    // Sprites de pixel art de 16x16 (16 columnas x 8 filas): chibi de cabeza grande, siempre pequenos.
+    // Sprites de pixel art de 32x32 (32 columnas x 16 filas) para la principal; las tarjetas de subagentes usan la version de 16x8.
     const photo = C.photo && RasterEl !== undefined ? fitPhoto(C.photo, Math.max(6, avail - 8)) : undefined   // foto ASCII: se achica para que quepa completa en el pane
     const anim = !photo && C.anim && RasterEl !== undefined ? C.anim : undefined   // arte ASCII animado dibujado por la IA
     const celdas = effRender() === 'celdas'
-    const spriteW = 16
-    const spriteH = 8
+    // Sprite de pixel art de 32x32 en 16 columnas x 8 filas (cuadrantes).
+    type Look = { pet: string; color: string; accessory: string; accent: string; custom?: Cfg['custom']; design?: Cfg['design'] }
+    const pix = (key: string, md: Mood, L: Look) => RasterEl && <RasterEl key={key} {...pixelCells(md, tick, L.pet, L.color, L.accessory, L.accent, L.custom, L.design, celdas)} />
+    // Foto ASCII, arte ASCII por cuadros o pixel art de la configuracion principal.
+    const spriteEl = (key: string, md: Mood, maxRows: number) => (C.photo ? RasterEl && <RasterEl key={key} {...photoCells(fitPhoto(C.photo, maxRows), md, tick)} />
+      : C.anim ? RasterEl && <RasterEl key={key} {...animCells(C.anim, md, tick)} /> : pix(key, md, C))
+    const spriteW = SPRITE_COLS
+    const spriteH = SPRITE_ROWS
     const mainW = photo ? photo.cols : anim ? anim.cols : spriteW
     const mainH = photo ? photo.rows : anim ? anim.rows : spriteH
     const leftW = Math.max(LEFT_W, mainW + 4)
     const cardW = CARD_W
-    const sprite = photo ? photoCells(photo, mood, tick) : anim ? animCells(anim, mood, tick) : usePixel ? pixelCells(mood, tick, C.pet, C.color, C.accessory, C.accent, C.custom, C.design, celdas) : undefined
+    const sprite = RasterEl !== undefined && (photo || anim || usePixel) ? spriteEl('main', mood, Math.max(6, avail - 8)) : undefined
     const perRow = Math.max(1, Math.floor((cols - leftW - 3) / (cardW + 1)))
     const compactH = usePixel ? spriteH + 2 : 5
     const capFull = perRow * Math.floor(avail / (usePixel ? spriteH + 2 : 7))
@@ -771,16 +794,34 @@ export const register: Register = on => {
     const line = <Text>{m.timeline.slice(-28).map(k => <Text color={KIND_COLOR[k]}>#</Text>)}</Text>
     const mainArt = compactArt(art, C.accessory)
 
+    const moods = ['think', 'read', 'write', 'run', 'wait', 'error', 'sleep', 'happy'] as const
+    if (m.gallery) {
+      const gm = moods[Math.floor(m.tick / 32) % moods.length]!
+      return (
+        <Box borderStyle="round" borderColor={mainColor} paddingX={1} flexDirection="column">
+          <Text color={mainColor} weight="bold">GALERIA DE MASCOTAS | {gm.toUpperCase()}</Text>
+          <Box gap={2} flexWrap="wrap">
+            {PETS.map(pet => (
+              <Box key={pet} flexDirection="column">
+                {RasterEl ? pix(pet, gm, { pet, color: '', accessory: 'ninguno', accent: '' }) : bigArt(gm, tick, pet).map(l => <Text color={mainColor}>{nbsp(l)}</Text>)}
+                <Text dimColor>{pet} · {MOOD_ES[gm]}</Text>
+              </Box>
+            ))}
+          </Box>
+          <Text dimColor>/pets galeria (salir)</Text>
+        </Box>
+      )
+    }
+
     if (m.edit) {
-      const moods = ['think', 'read', 'write', 'run', 'wait', 'error', 'sleep', 'happy'] as const
       return (
         <Box borderStyle="round" borderColor={mainColor} paddingX={1} flexDirection="column">
           <Text color={mainColor} weight="bold">EDITOR DE MASCOTA {C.name ? `| ${C.name.toUpperCase()}` : ''}</Text>
-          <Box gap={2}>
+          <Box gap={2} flexWrap="wrap">
             {moods.map(md => (
               <Box key={md} flexDirection="column">
-                {bigArt(md, 0, C.pet, C).map(l => <Text color={mainColor}>{nbsp(l)}</Text>)}
-                <Text dimColor>{md}</Text>
+                {RasterEl ? spriteEl(md, md, 12) : bigArt(md, tick, C.pet, C).map(l => <Text color={mainColor}>{nbsp(l)}</Text>)}
+                <Text dimColor>{MOOD_ES[md]}</Text>
               </Box>
             ))}
           </Box>
@@ -794,7 +835,7 @@ export const register: Register = on => {
       <Box width={stacked ? undefined : leftW} borderStyle="round" borderColor={mainColor} paddingX={1} flexDirection="column">
         <Text color={mainColor} weight="bold">{label.toUpperCase().slice(0, leftW - 4)}</Text>
         <Box gap={1}>
-          {sprite && RasterEl ? <RasterEl key="main" {...sprite} /> : (
+          {sprite ? sprite : (
             <Box flexDirection="column">{(roomy ? art : mainArt).map(l => <Text color={mainColor}>{nbsp(l)}</Text>)}</Box>
           )}
           {mainW <= 16 && (
@@ -843,7 +884,7 @@ export const register: Register = on => {
           return (
             <Box key={a.id} width={cardW} borderStyle="round" borderColor={COLOR[a.status]} paddingX={2} gap={1}>
               {usePixel && RasterEl ? (
-                <RasterEl key={`px-${a.id}`} {...pixelCells(amood, tick, me.pet, bad ? '#f87171' : me.color, me.accessory, bad ? '' : me.accent ?? '', me.custom, me.design, celdas)} />
+                pix(`px-${a.id}`, amood, { pet: me.pet, color: bad ? '#f87171' : me.color, accessory: me.accessory, accent: bad ? '' : me.accent ?? '', custom: me.custom, design: me.design })
               ) : (
                 <Box flexDirection="column">{face.map(l => <Text color={tone}>{nbsp(l)}</Text>)}</Box>
               )}

@@ -9,7 +9,7 @@ export type Live = {
 }
 // Diseno vectorial hecho por la IA sobre un lienzo de 16x16 (x a la derecha, y hacia abajo): formas con color, `m` las refleja; `face` dice donde van ojos (2x3) y boca (2x1).
 export type DesignPart = { s: 'ellipse' | 'rect' | 'tri' | 'poly'; c: string; m?: boolean; cx?: number; cy?: number; rx?: number; ry?: number; x?: number; y?: number; w?: number; h?: number; p?: number[][] }
-export type Design = { parts: DesignPart[]; face: Face }
+export type Design = { parts: DesignPart[]; face: Face; frames?: number[][][] }
 // Animacion de arte ASCII dibujada por la IA: cuadros de cols x rows caracteres (cada cuadro, sus filas unidas), color por caracter y uno base.
 export type AsciiAnim = { cols: number; rows: number; frames: string[]; colors: Record<string, string>; base: string }
 // Foto ASCII a color: un caracter por celda (cols x rows) y su color (6 hex por celda).
@@ -53,6 +53,7 @@ export type Model = {
   cfg: Cfg
   custom: Record<string, SetDef>
   edit: boolean
+  gallery: boolean
 }
 
 declare module 'claude-code' {

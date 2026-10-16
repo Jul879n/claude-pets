@@ -168,7 +168,20 @@ export function bigArt(mood: Mood, tick: number, pet: string, look: Look = { eye
     dragon: [' /\\^^^/\\ ', ` (${e}) `, `  \\_${m}_/  `],
     monster: [' \\\\   // ', ` (${e}) `, `  (_${m}_)  `],
   }
-  const lines = art[pet] ?? ['  /\\_/\\  ', ` (${e}) `, `  > ${m} <  `]
+  const lines = [...(art[pet] ?? ['  /\\_/\\  ', ` (${e}) `, `  > ${m} <  `])]
+  // Cuerpo animado: brazos en la linea 1, vaiven de todo el cuerpo, pasos al correr y respiracion al dormir.
+  const ARMS: Partial<Record<Mood, [string, string][]>> = {
+    happy: [['\\', '/'], ['_', '_']], error: [['/', '\\'], ['\\', '/']], write: [[' ', '_'], [' ', '/']],
+    read: [['[', ']'], ['[', ']']], run: [['-', '-'], [' ', ' ']],
+  }
+  const SWAY: Partial<Record<Mood, number[]>> = { think: [0, 1, 0, -1], write: [0, 0, 1, 0], run: [0, 1, 0, 1], error: [-1, 1, -1, 1] }
+  const shift = (l: string, d: number) => (d > 0 && l.endsWith(' ') ? ' ' + l.slice(0, -1) : d < 0 && l.startsWith(' ') ? l.slice(1) + ' ' : l)
+  const arm = ARMS[mood]?.[tick % 2]
+  if (arm) lines[1] = arm[0] + lines[1]!.slice(1, -1) + arm[1]
+  const sway = SWAY[mood]?.[tick % 4] ?? 0
+  if (sway) for (let i = 0; i < lines.length; i++) lines[i] = shift(lines[i]!, sway)
+  if (mood === 'run') lines[2] = shift(lines[2]!, tick % 2 ? 1 : -1)
+  if (mood === 'sleep' && tick % 4 >= 2) lines[0] = shift(lines[0]!, 1)
   if (look.accessory === 'sombrero') return ['   _|^|_  ', ...lines]
   if (look.accessory === 'corona') return ['  \\VvVvV/ ', ...lines]
   if (look.accessory === 'corbata') return [...lines, '    \\v/   ']
@@ -187,13 +200,15 @@ export function bar(n: number, width = 10, cap = 20): string {
   return `[${'#'.repeat(on)}${'-'.repeat(width - on)}]`
 }
 
-// Pixel art para Raster: 16x16 dibujado a mano alzada con formas simples (estilo "chibi" de cabeza grande, contorno limpio, dos tonos,
-// ojos grandes con brillo), dos pixeles por celda con medios bloques solidos: 16 columnas x 8 filas. Los dibujos propios (IA o imagen)
-// llegan a 32x32 y se reducen 2x2 -> 1 (color mas frecuente; en empate, el mas oscuro para conservar contornos).
+// Pixel art para Raster: 32x32 dibujado con formas simples (estilo "chibi" de cabeza grande, contorno limpio, dos tonos, ojos grandes con
+// brillo). La grilla es de 32x32 pero se dibuja en 16 columnas x 8 filas con cuadrantes (2x2 subpixeles por celda, 2 colores por celda).
+// La cara, los accesorios y el movimiento se escriben en una grilla logica de 16 (cada unidad = S pixeles).
 export const SPRITE_COLS = 16
 export const SPRITE_ROWS = 8
 export const CUSTOM_SIZE = 32
-const N = 16
+const N = 32
+const S = N / 16
+const lumOf = (v: number) => ((v >> 16) & 255) * 0.3 + ((v >> 8) & 255) * 0.59 + (v & 255) * 0.11
 const BASE = 14
 // codigos: 0 nada, 1 pelaje, 2 contorno, 3 claro, 4 rosado, 5 pico
 const BODY: Record<string, number> = {
@@ -306,6 +321,65 @@ const shade = (c: number, k: number) => ((((c >> 16) & 255) * k) << 16) | ((((c 
 const light = (c: number, t = 0.5) => (((((c >> 16) & 255) + (255 - ((c >> 16) & 255)) * t) | 0) << 16) | (((((c >> 8) & 255) + (255 - ((c >> 8) & 255)) * t) | 0) << 8) | (((c & 255) + (255 - (c & 255)) * t) | 0)
 const dim = (c: number) => shade(c, 0.75)
 
+// Volumen: luz desde arriba a la izquierda. Degradado suave (mas claro arriba-izquierda, mas oscuro abajo-derecha) y borde de luz /
+// de sombra en el contorno; mas tonos por sprite para que se vea en relieve.
+function volume(g: number[][]) {
+  const at = (x: number, y: number) => g[y]?.[x] ?? NONE
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const c = g[y]![x]!
+    if (c === NONE) continue
+    let k = 1 - 0.16 * (y / N) + 0.08 * (1 - x / N)
+    if (at(x - 2, y - 2) === NONE) k += 0.14
+    if (at(x + 2, y + 2) === NONE) k -= 0.14
+    g[y]![x] = k >= 1 ? light(c, Math.min(0.4, k - 1)) : shade(c, Math.max(0.55, k))
+  }
+}
+
+// Reduce 2x2 -> 1 (modo celdas): color mas frecuente de cada bloque (en empate, el mas oscuro); con menos de 2 pixeles pintados, vacio.
+function reduce2(g: number[][]): number[][] {
+  const n = g.length / 2
+  return Array.from({ length: n }, (_, y) => Array.from({ length: n }, (_, x) => {
+    const cs = [g[2 * y]![2 * x]!, g[2 * y]![2 * x + 1]!, g[2 * y + 1]![2 * x]!, g[2 * y + 1]![2 * x + 1]!].filter(v => v !== NONE)
+    if (cs.length < 2) return NONE
+    const count = new Map<number, number>()
+    for (const v of cs) count.set(v, (count.get(v) ?? 0) + 1)
+    return [...count.entries()].sort((p, q) => q[1] - p[1] || lumOf(p[0]) - lumOf(q[0]))[0]![0]
+  }))
+}
+
+// Cuadrantes (BMP, U+2596-259F): indice = mascara de subpixeles encendidos (1 arriba izq, 2 arriba der, 4 abajo izq, 8 abajo der).
+const QUAD = [0x20, 0x2598, 0x259d, 0x2580, 0x2596, 0x258c, 0x259e, 0x259b, 0x2597, 0x259a, 0x2590, 0x259c, 0x2584, 0x2599, 0x259f, 0x2588]
+const mean = (cs: number[]) => {
+  const k = cs.length
+  return (((cs.reduce((t, c) => t + ((c >> 16) & 255), 0) / k) << 16) | ((cs.reduce((t, c) => t + ((c >> 8) & 255), 0) / k) << 8) | (cs.reduce((t, c) => t + (c & 255), 0) / k)) >>> 0
+}
+// Grilla de n x n -> celdas de n/2 columnas x n/4 filas: cada celda reune 2 columnas x 4 filas, que se reducen a 2x2 subpixeles (promedio vertical)
+// y se dibujan con un cuadrante y 2 colores (los 2 mas distantes del bloque; el resto toma el mas cercano).
+function quadCells(g: number[][]): number[] {
+  const n = g.length, words: number[] = []
+  const d2 = (a: number, b: number) => (((a >> 16) & 255) - ((b >> 16) & 255)) ** 2 + (((a >> 8) & 255) - ((b >> 8) & 255)) ** 2 + ((a & 255) - (b & 255)) ** 2
+  for (let cy = 0; cy < n / 4; cy++) for (let cx = 0; cx < n / 2; cx++) {
+    const sub = [0, 1, 2, 3].map(q => {   // q: 0 arriba izq, 1 arriba der, 2 abajo izq, 3 abajo der; cada subpixel = 1 columna x 2 filas
+      const x = cx * 2 + (q & 1), y = cy * 4 + (q >> 1) * 2
+      const cs = [g[y]![x]!, g[y + 1]![x]!].filter(v => v !== NONE)
+      return cs.length ? mean(cs) : NONE
+    })
+    const on = sub.filter(v => v !== NONE)
+    if (!on.length) { words.push(0x20, 0, NONE); continue }
+    if (on.length < 4) {   // borde del dibujo: el fondo queda transparente
+      words.push(QUAD[sub.reduce((t, v, q) => (v !== NONE ? t | (1 << q) : t), 0)]!, mean(on), NONE)
+      continue
+    }
+    let a = sub[0]!, b = sub[0]!, far = -1
+    for (const u of sub) for (const v of sub) if (d2(u, v) > far) { far = d2(u, v); a = u; b = v }
+    if (far === 0) { words.push(0x2588, a, a); continue }
+    const near = sub.map(v => d2(v, a) <= d2(v, b))
+    const fg = mean(sub.filter((_, q) => near[q]!)), bg = mean(sub.filter((_, q) => !near[q]!))
+    words.push(QUAD[near.reduce((t, f, q) => (f ? t | (1 << q) : t), 0)]!, fg, bg)
+  }
+  return words
+}
+
 // Pinta una forma con estilo limpio: contorno oscuro, un tono de sombra abajo y un brillo arriba a la izquierda.
 function paint(shape: Shape, body: number, pet: string, accent?: number): number[][] {
   const n = shape.length
@@ -322,24 +396,18 @@ function paint(shape: Shape, body: number, pet: string, accent?: number): number
   return g
 }
 
-// Un dibujo propio de 32x32 (letras + paleta) reducido a 16x16.
+// Un dibujo propio de 32x32 (letras + paleta), pixel por pixel.
 function paintCustom(c: CustomArt, dimmed: boolean): number[][] {
   const colors: Record<string, number> = {}
   for (const [k, v] of Object.entries(c.palette)) colors[k] = parseInt(v.slice(1), 16)
-  const lum = (v: number) => ((v >> 16) & 255) * 0.3 + ((v >> 8) & 255) * 0.59 + (v & 255) * 0.11
-  const at = (x: number, y: number) => colors[c.art[y]?.[x] ?? '.']
   return Array.from({ length: N }, (_, y) => Array.from({ length: N }, (_, x) => {
-    const cs = [at(2 * x, 2 * y), at(2 * x + 1, 2 * y), at(2 * x, 2 * y + 1), at(2 * x + 1, 2 * y + 1)].filter((v): v is number => v !== undefined)
-    if (cs.length < 2) return NONE
-    const count = new Map<number, number>()
-    for (const v of cs) count.set(v, (count.get(v) ?? 0) + 1)
-    const win = [...count.entries()].sort((p, q) => q[1] - p[1] || lum(p[0]) - lum(q[0]))[0]![0]
-    return dimmed ? dim(win) : win
+    const v = colors[c.art[y]?.[x] ?? '.']
+    return v === undefined ? NONE : dimmed ? dim(v) : v
   }))
 }
 
 // Un diseno vectorial de la IA -> pixeles: cada forma (ya reflejada si `m`) se pinta en orden; luego contorno oscuro y sombra abajo.
-function designGrid(d: Design, dimmed: boolean): number[][] {
+function designGrid(d: Design, dimmed: boolean, frame?: number[][]): number[][] {
   const g: number[][] = Array.from({ length: N }, () => Array<number>(N).fill(NONE))
   const inPoly = (px: number, py: number, pts: number[][]) => {
     let inside = false
@@ -349,21 +417,23 @@ function designGrid(d: Design, dimmed: boolean): number[][] {
     }
     return inside
   }
-  const draw = (part: DesignPart, flip: boolean) => {
+  const draw = (part: DesignPart, flip: boolean, idx: number) => {
     const col = parseInt(part.c.slice(1), 16)
-    const fx = (x: number) => (flip ? N - x : x)
-    const pts = (part.p ?? []).map(([x, y]) => [fx(x!), y!])
-    const rx0 = flip ? N - ((part.x ?? 0) + (part.w ?? 0)) : part.x ?? 0
+    const off = frame?.find(f => f[0] === idx)
+    const ox = off ? (flip ? -off[1]! : off[1]!) : 0, oy = off ? off[2]! : 0
+    const fx = (x: number) => (flip ? 16 - x : x) + ox
+    const pts = (part.p ?? []).map(([x, y]) => [fx(x!), y! + oy])
+    const rx0 = (flip ? 16 - ((part.x ?? 0) + (part.w ?? 0)) : part.x ?? 0) + ox
     for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
-      const px = x + 0.5, py = y + 0.5
+      const px = (x + 0.5) / S, py = (y + 0.5) / S   // el lienzo de la IA es de 16: se dibuja a doble resolucion
       let hit = false
-      if (part.s === 'ellipse') hit = ((px - fx(part.cx ?? 0)) / (part.rx ?? 1)) ** 2 + ((py - (part.cy ?? 0)) / (part.ry ?? 1)) ** 2 <= 1
-      else if (part.s === 'rect') hit = px >= rx0 && px <= rx0 + (part.w ?? 0) && py >= (part.y ?? 0) && py <= (part.y ?? 0) + (part.h ?? 0)
+      if (part.s === 'ellipse') hit = ((px - fx(part.cx ?? 0)) / (part.rx ?? 1)) ** 2 + ((py - (part.cy ?? 0) - oy) / (part.ry ?? 1)) ** 2 <= 1
+      else if (part.s === 'rect') hit = px >= rx0 && px <= rx0 + (part.w ?? 0) && py >= (part.y ?? 0) + oy && py <= (part.y ?? 0) + oy + (part.h ?? 0)
       else hit = pts.length >= 3 && inPoly(px, py, pts)
       if (hit) g[y]![x] = col
     }
   }
-  for (const part of d.parts) { draw(part, false); if (part.m) draw(part, true) }
+  d.parts.forEach((part, idx) => { draw(part, false, idx); if (part.m) draw(part, true, idx) })
   const at = (x: number, y: number) => g[y]?.[x] ?? NONE
   const edge = (x: number, y: number) => [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => at(x + dx!, y + dy!) === NONE)
   return g.map((row, y) => row.map((c, x) => {
@@ -380,8 +450,10 @@ export function parseDesign(raw: unknown): Design | undefined {
   if (!Array.isArray(o.parts) || o.parts.length < 2 || o.parts.length > 40) return undefined
   const num = (v: unknown, lo = -2, hi = 18) => (typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi ? v : undefined)
   const parts: DesignPart[] = []
-  for (const p of o.parts) {
+  const map: Record<number, number> = {}
+  for (const [raw, p] of o.parts.entries()) {
     if (!p || typeof p !== 'object') continue
+    const before = parts.length
     const q = p as Record<string, unknown>
     const c = typeof q.c === 'string' && /^#[0-9a-f]{6}$/i.test(q.c) ? q.c : undefined
     if (!c) continue
@@ -396,11 +468,28 @@ export function parseDesign(raw: unknown): Design | undefined {
       const pts = Array.isArray(q.p) ? q.p.map(pt => (Array.isArray(pt) ? [num(pt[0]), num(pt[1])] : [])) : []
       if (pts.length >= 3 && pts.length <= 12 && pts.every(pt => pt[0] !== undefined && pt[1] !== undefined)) parts.push({ s: q.s, c, m, p: pts as number[][] })
     }
+    if (parts.length > before) map[raw] = parts.length - 1
   }
   const f = (o.face ?? {}) as Record<string, unknown>
   const face = { l: num(f.l, 1, 12), r: num(f.r, 1, 12), y: num(f.y, 2, 11), mx: num(f.mx, 1, 13), my: num(f.my, 3, 13) }
   if (parts.length < 2 || Object.values(face).some(v => v === undefined) || face.l! + 2 >= face.r!) return undefined
-  return { parts, face: { l: Math.round(face.l!), r: Math.round(face.r!), y: Math.round(face.y!), mx: Math.round(face.mx!), my: Math.round(face.my!) } }
+  const design: Design = { parts, face: { l: Math.round(face.l!), r: Math.round(face.r!), y: Math.round(face.y!), mx: Math.round(face.mx!), my: Math.round(face.my!) } }
+  if (Array.isArray(o.frames) && o.frames.length >= 2 && o.frames.length <= 8) {
+    const frames = o.frames.map((fr): number[][] => {
+      if (!Array.isArray(fr)) return []
+      const moves: number[][] = []
+      for (const mv of fr.slice(0, 40)) {
+        if (!Array.isArray(mv)) continue
+        const [i, dx, dy] = mv as unknown[]
+        const to = typeof i === 'number' && Number.isInteger(i) ? map[i] : undefined
+        const mdx = num(dx, -2, 2), mdy = num(dy, -2, 2)
+        if (to !== undefined && mdx !== undefined && mdy !== undefined) moves.push([to, mdx, mdy])
+      }
+      return moves
+    })
+    if (frames.length >= 2) design.frames = frames
+  }
+  return design
 }
 
 // Para el agente que diseña: el formato del diseno vectorial, con un ejemplo.
@@ -411,17 +500,146 @@ export const DESIGN_SPEC =
   'con "m":true la forma tambien se dibuja reflejada (x -> 16-x), asi lo simetrico se escribe una vez. ' +
   'Disena desde cero el personaje con una silueta inmediatamente reconocible (cuernos, antenas, visera, armadura, orejas, alas...): primero la masa grande (cabeza o torso), despues rasgos y detalles, entre 6 y 28 formas y de 4 a 8 colores fieles a la referencia. ' +
   'El mod agrega contorno oscuro y sombra solo. Deja un area lisa del color del cuerpo para la cara: los ojos miden 2x3 (columnas l y r, desde la fila y) y la boca 2x1 (mx, my). ' +
-  'Ejemplo (gato): {"name":"Michi","pet":"cat","color":"#fbbf24","design":{"parts":[{"s":"tri","p":[[1,6],[2,1],[6,4]],"c":"#fbbf24","m":true},{"s":"ellipse","cx":8,"cy":9,"rx":6.5,"ry":5,"c":"#fbbf24"},{"s":"ellipse","cx":8,"cy":11.5,"rx":3,"ry":1.8,"c":"#fde68a"}],"face":{"l":4,"r":10,"y":7,"mx":7,"my":11}}}.'
+  '"frames": de 4 a 6 cuadros de animacion; cada cuadro es una lista de movimientos [indice de la forma en "parts", dx, dy] con dx y dy entre -2 y 2 (admite decimales); las formas sin movimiento quedan quietas y las reflejadas se mueven en espejo. Anima partes concretas del personaje como un ciclo (orejas o antenas que se mecen, alas o brazos que aletean, cola que se agita, patas que caminan, el cuerpo que respira); no animes solo los ojos ni cambies colores. ' +
+  'Ejemplo (gato): {"name":"Michi","pet":"cat","color":"#fbbf24","design":{"parts":[{"s":"tri","p":[[1,6],[2,1],[6,4]],"c":"#fbbf24","m":true},{"s":"ellipse","cx":8,"cy":9,"rx":6.5,"ry":5,"c":"#fbbf24"},{"s":"ellipse","cx":8,"cy":11.5,"rx":3,"ry":1.8,"c":"#fde68a"}],"face":{"l":4,"r":10,"y":7,"mx":7,"my":11},"frames":[[[0,0.5,0]],[[0,-0.5,0]],[[0,0.5,0],[1,0,-0.5]],[]]}}.'
 
 type Face = { l: number; r: number; y: number; mx: number; my: number }
 const FACE: Face = { l: 3, r: 11, y: 6, mx: 7, my: 10 }   // ojos de 2x3 en las columnas 3 y 11, fila 6; boca de 2x1 en la fila 10
 
-export function pixelCells(mood: Mood, tick: number, pet: string, color = '', accessory = 'ninguno', accent = '', custom?: CustomArt | null, design?: Design | null, celdas = false): { columns: number; rows: number; cells: string } {
+type Pose = { head?: number[]; armL?: number[]; armR?: number[]; footL?: number[]; footR?: number[]; squash?: number[] }
+type Rig = { headRows: number; headAxis: 'x' | 'y'; armAmp: number; squash: boolean; float: boolean; feet: 'step' | 'wave' | 'none' }
+// Las mascotas son casi solo cabeza: sin brazos ni pies propios las bandas recortarian la cara, asi que solo las que tienen extremidades las mueven.
+const RIG_BASE: Rig = { headRows: 5, headAxis: 'x', armAmp: 0, squash: true, float: false, feet: 'none' }
+const RIG: Record<string, Partial<Rig>> = {
+  ghost: { float: true, feet: 'wave' },                 // flota y la cola ondula
+  robot: { headRows: 4, headAxis: 'y', squash: false, armAmp: 1 }, // antena que rebota, cuerpo rigido
+  owl: { headRows: 11, armAmp: 2 },                     // gira la cabeza entera (con ojos), aletea fuerte
+  dragon: { armAmp: 2 },                                // aletas/alas que baten
+  bunny: { headRows: 7 },                               // orejas largas que se mecen
+}
+const POSE: Record<Mood, Pose> = {
+  think: { head: [0, 1, 0, -1] },
+  read: { head: [0, 0, 1, 0], armL: [-1, -1, -1, -1], armR: [-1, -1, -1, -1] },
+  write: { armR: [0, -1, 0, -1] },
+  run: { head: [0, 0, -1, -1], armL: [0, -1, 0, -1], armR: [-1, 0, -1, 0], footL: [-1, 0, -1, 0], footR: [0, -1, 0, -1] },
+  wait: { footR: [0, -1, 0, 0] },
+  error: { head: [-1, 1, -1, 1], armL: [-2, -1, -2, -1], armR: [-2, -1, -2, -1] },
+  sleep: { head: [0, 1, 0, 0], squash: [1, 0.94, 0.88, 0.94] },
+  happy: { armL: [0, -1, -2, -1], armR: [0, -1, -2, -1], squash: [0.88, 1, 1.06, 1] },
+}
+
+// Mueve partes del cuerpo (cabeza, brazos, pies) y estira el torso segun el animo; devuelve una grilla nueva.
+function animate(g: number[][], mood: Mood, tick: number, rig: Rig, bands: boolean): number[][] {
+  const t = tick % 4, pose = POSE[mood]
+  const at = (a?: number[]) => (a?.[t] ?? 0) * S
+  let src = g
+  if (bands) {
+    const out = g.map(r => [...r])
+    // rangos en la grilla logica de 16 (inclusivos); dx y dy ya en pixeles
+    const move = (x0: number, x1: number, y0: number, y1: number, dx: number, dy: number) => {
+      const X0 = x0 * S, X1 = (x1 + 1) * S - 1, Y0 = y0 * S, Y1 = (y1 + 1) * S - 1
+      for (let y = Y0; y <= Y1; y++) for (let x = X0; x <= X1; x++) out[y]![x] = NONE
+      for (let y = Y0; y <= Y1; y++) for (let x = X0; x <= X1; x++) {
+        const c = g[y]![x]!, nx = x + dx, ny = y + dy
+        if (c !== NONE && nx >= 0 && nx < N && ny >= 0 && ny < N) out[ny]![nx] = c
+      }
+    }
+    const head = at(pose.head)
+    // las bandas se pintan en orden: pies y brazos primero, cabeza encima
+    if (rig.feet === 'none') { /* sin pies */ }
+    else if (rig.feet === 'step') { move(0, 7, 13, 15, 0, at(pose.footL)); move(8, 15, 13, 15, 0, at(pose.footR)) }
+    else move(0, 15, 12, 15, (tick % 2 ? 1 : -1) * S, 0)
+    const aL = at(pose.armL) * rig.armAmp, aR = at(pose.armR) * rig.armAmp
+    if (aL) move(0, 2, 5, 12, 0, aL)
+    if (aR) move(13, 15, 5, 12, 0, aR)
+    if (head && rig.headAxis === 'x') move(0, 15, 0, rig.headRows - 1, head, 0)
+    else if (head) for (let y = 0, n = Math.abs(head) * 2; y < rig.headRows * S - n; y++) out[y] = [...g[y + n]!]   // antena: estira hacia arriba sin abrir un hueco en el cuerpo
+    src = out
+  }
+  const s = rig.squash ? pose.squash?.[t] ?? 1 : 1
+  if (s === 1) return src
+  return src.map((_, y) => src[Math.round(N - 1 - (N - 1 - y) / s)]?.map(c => c) ?? Array<number>(N).fill(NONE))
+}
+
+// Utileria animada por actividad, sobre la grilla ya movida (pixeles nativos: objetos con contorno, dos tonos y detalle).
+function stamp(g: number[][], art: string[], x0: number, y0: number, pal: Record<string, number>, sc = 1) {
+  art.forEach((row, j) => [...row].forEach((ch, i) => {
+    const c = pal[ch]
+    if (c === undefined) return
+    for (let b = 0; b < sc; b++) for (let a = 0; a < sc; a++) {
+      const y = y0 + j * sc + b, x = x0 + i * sc + a
+      if (g[y] && x >= 0 && x < N) g[y]![x] = c
+    }
+  }))
+}
+
+function props(g: number[][], mood: Mood, tick: number, pet: string, custom: boolean) {
+  const t = tick % 4
+  const blk = (x: number, y: number, w: number, h: number, c: number) => stamp(g, Array.from({ length: h }, () => 'x'.repeat(w)), x, y, { x: c })
+  const O = 0x1f2937
+  if (mood === 'think') {   // globo de pensamiento, arriba a la derecha
+    const pal = { o: O, w: 0xf8fafc, g: 0x94a3b8 }
+    if (t === 0) stamp(g, ['ooo', 'owo', 'ooo'], 21, 10, pal)
+    if (t >= 1) { stamp(g, ['ooo', 'owo', 'ooo'], 21, 10, pal); stamp(g, ['.oo.', 'owwo', 'owwo', '.oo.'], 23, 5, pal) }
+    if (t >= 2) stamp(g, ['.oooooooo.', 'owwwwwwwwo', 'owgwwgwwgo', 'owwwwwwwwo', '.oooooooo.'], 22, 0, pal)
+  } else if (mood === 'read') {   // libro abierto, abajo a la izquierda, con una hoja que se levanta
+    const pal = { o: O, w: 0xf8fafc, e: 0xe5e7eb, g: 0x94a3b8, b: 0x1d4ed8 }
+    stamp(g, ['ooooooooooooo', 'owwwwwoeeeeeo', 'owgggwoegggeo', 'owwwwwoeeeeeo', 'owgggwoegggeo', 'owwwwwoeeeeeo', 'obbbbbbbbbbbo', 'ooooooooooooo'], 0, 24, pal)
+    if (t === 2) stamp(g, ['.oooooo.', 'owwwwwwo'], 2, 22, pal)
+    if (t === 3) stamp(g, ['owwo'], 3, 23, pal)
+  } else if (mood === 'write') {   // lapiz horizontal abajo a la derecha que deja una linea de tinta
+    const o = [0, 2, 0, 2][t]!
+    stamp(g, ['..ooooooooooo.', '.owwyyyyyyyppo', 'okwwdddddddppo', '.owwyyyyyyyppo', '..ooooooooooo.'], 16 + o, 24, { o: O, k: O, w: 0xfde68a, y: 0xfbbf24, d: 0xd97706, p: 0xf472b6 })
+    blk(4, 30, 8 + o, 2, 0x60a5fa)
+  } else if (mood === 'run') {
+    if (pet === 'dragon' && !custom) {   // fuego bajo el hocico
+      const h = [2, 4, 6, 4][t]!
+      blk(12, N - h, 8, h, 0xf97316); blk(14, N - h, 4, 2, 0xfacc15)
+    } else {   // engranaje que gira
+      const cx = 25, cy = 6
+      for (let y = -6; y <= 6; y++) for (let x = -6; x <= 6; x++) {
+        const d = Math.hypot(x, y)
+        if (d <= 2) g[cy + y]![cx + x] = 0x374151
+        else if (d <= 4.5) g[cy + y]![cx + x] = 0x9ca3af
+        else if (d <= 5.4) g[cy + y]![cx + x] = 0x6b7280
+      }
+      for (let k = 0; k < 8; k++) {
+        const a = (k * Math.PI) / 4 + (t * Math.PI) / 16
+        blk(Math.min(N - 3, Math.round(cx + 6.4 * Math.cos(a)) - 1), Math.max(0, Math.round(cy + 6.4 * Math.sin(a)) - 1), 3, 3, 0xcbd5e1)
+      }
+    }
+  } else if (mood === 'wait') {   // reloj de arena: marco, vidrio y arena que cae
+    const rows = ['yyyyyyyyyy', 'occcccccco', '.occcccco.', '..occcco..', '...occo...', '...occo...', '...occo...', '..occcco..', '.occcccco.', 'occcccccco', 'yyyyyyyyyy']
+    const top = [[1, 2, 3, 4], [2, 3, 4], [3, 4], [4]][t]!, bot = [[9], [8, 9], [7, 8, 9], [6, 7, 8, 9]][t]!
+    const sand = (r: number) => (top.includes(r) || bot.includes(r) || (r === 5 && t < 3) ? rows[r]!.replace(/c/g, 's') : rows[r]!)
+    stamp(g, rows.map((_, r) => sand(r)), 22, 0, { y: 0xfbbf24, o: 0x94a3b8, c: 0xbfdbfe, s: 0xfde68a })
+  } else if (mood === 'error') {   // triangulo de advertencia con "!" que parpadea, y humo
+    const tri = ['.....oo.....', '....oyyo....', '...oyyyyo...', '...oykkyo...', '..oyykkyyo..', '..oyykkyyo..', '.oyyykkyyyo.', '.oyyyyyyyyo.', 'oyyyykkyyyyo', 'oyyyykkyyyyo', 'oooooooooooo']
+    stamp(g, tri, 20, 0, { o: O, y: t % 2 ? 0xfacc15 : 0xfb923c, k: O })
+    const puff = ['.gg.', 'gggg', 'gggg', '.gg.']
+    stamp(g, puff, 2, 8 - 2 * t, { g: 0x9ca3af }); stamp(g, puff, 7, 14 - 2 * t, { g: 0x9ca3af })
+  } else if (mood === 'sleep') {   // zzz que crecen
+    const z = ['bbbbb', '...b.', '..b..', '.b...', 'bbbbb']
+    if (t <= 1) stamp(g, z, 24, 8, { b: 0x93c5fd })
+    if (t === 1) stamp(g, z, 20, 0, { b: 0x93c5fd }, 2)
+    if (t === 2) stamp(g, z, 21, 0, { b: 0x93c5fd }, 2)
+  } else {   // corazon que sube
+    stamp(g, ['..oo.oo..', '.orrorro.', 'orwrrrrro', 'orrrrrrro', '.orrrrro.', '..orrro..', '...oro...', '....o....'], 22, 8 - 2 * t, { o: 0x9f1239, r: 0xff7aa8, w: 0xffd1dc })
+  }
+}
+
+// La grilla de 32x32 de un sprite (colores 0xRRGGBB; NONE = transparente), con cara, accesorios, partes que se mueven y utileria.
+function pixelGrid(mood: Mood, tick: number, pet: string, color: string, accessory: string, accent: string, custom?: CustomArt | null, design?: Design | null): number[][] {
   const body = color ? parseInt(color.slice(1), 16) : BODY[pet] ?? 0xfbbf24
   const tint = mood === 'sleep' ? dim(body) : body   // dormida: mismo color, un poco apagado
-  const grid = design ? designGrid(design, mood === 'sleep') : custom ? paintCustom(custom, mood === 'sleep') : paint((shapes[pet] ?? shapes.cat!)(N), tint, pet, accent ? parseInt(accent.slice(1), 16) : undefined)
-  const put = (x: number, y: number, c: number) => { if (grid[y] && x >= 0 && x < N) grid[y]![x] = c }
-  const block = (x: number, y: number, w: number, h: number, c: number) => { for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) put(x + i, y + j, c) }
+  const frames = design?.frames
+  const frame = frames?.length ? frames[(mood === 'wait' || mood === 'sleep' ? Math.floor(tick / 2) : tick) % frames.length] : undefined
+  const grid = design ? designGrid(design, mood === 'sleep', frame) : custom ? paintCustom(custom, mood === 'sleep') : paint((shapes[pet] ?? shapes.cat!)(N), tint, pet, accent ? parseInt(accent.slice(1), 16) : undefined)
+  volume(grid)
+  const px = (x: number, y: number, c: number) => { if (grid[y] && x >= 0 && x < N) grid[y]![x] = c }
+  // la cara y los accesorios se dibujan en la grilla logica de 16: cada unidad son S x S pixeles
+  const block = (x: number, y: number, w: number, h: number, c: number) => { for (let j = 0; j < h * S; j++) for (let i = 0; i < w * S; i++) px(x * S + i, y * S + j, c) }
+  const put = (x: number, y: number, c: number) => block(x, y, 1, 1, c)
   const hasFace = design !== null && design !== undefined || !custom || !!custom.face
   const f: Face = design ? design.face : custom?.face ? { l: Math.round(custom.face.l / 2), r: Math.round(custom.face.r / 2), y: Math.round(custom.face.y / 2), mx: Math.round(custom.face.mx / 2), my: Math.round(custom.face.my / 2) } : FACE
   const E = f.y, MX = f.mx, MY = f.my
@@ -430,7 +648,7 @@ export function pixelCells(mood: Mood, tick: number, pet: string, color = '', ac
   const both = (fn: (x: number, right: boolean) => void) => { fn(f.l, false); fn(f.r, true) }
   const blink = tick % 8 === 0 && mood !== 'sleep' && mood !== 'happy' && mood !== 'error'
   if (hasFace) {
-    const eye = (x: number, dy = 0, h = 3) => { block(x, E + dy, 2, h, EYE); put(x, E + dy, WHITE) }   // ojo grande con brillo arriba a la izquierda
+    const eye = (x: number, dy = 0, h = 3) => { block(x, E + dy, 2, h, EYE); put(x, E + dy, WHITE); px((x + 2) * S - 2, (E + dy + h) * S - 2, 0x64748b) }   // ojo grande con brillo arriba a la izquierda
     if (blink) both(x => block(x, E + 2, 2, 1, EYE))                                                     // parpadeo
     else if (mood === 'think') both((x, r) => { eye(x, -1); put(r ? x + 1 : x, E - 3, EYE) })           // mira arriba, una ceja levantada
     else if (mood === 'read') { const d = tick % 2 ? 1 : -1; both(x => eye(x + d)) }                    // mira de lado a lado
@@ -450,8 +668,6 @@ export function pixelCells(mood: Mood, tick: number, pet: string, color = '', ac
     else if (mood === 'sleep') block(MX, MY + 1, 2, 1, dark)
     else block(MX, MY, 2, 1, dark)
   }
-  if (mood === 'error' || mood === 'wait') { put(14, 2, 0x93c5fd); block(13, 3, 3, 2, 0x60a5fa); put(14, 5, 0x3b82f6) }   // gota de sudor
-  if (mood === 'sleep' && tick % 4 < 2) { block(11, 0, 4, 1, 0x93c5fd); put(14, 1, 0x93c5fd); put(13, 2, 0x93c5fd); put(12, 3, 0x93c5fd); block(11, 4, 4, 1, 0x93c5fd) }   // "z" de 4x5
   if (!custom && !design) {
     if (accessory === 'sombrero') { block(4, 0, 8, 3, 0xdc2626); block(2, 3, 12, 1, 0x7f1d1d); put(5, 1, 0xf87171) }
     if (accessory === 'corona') { for (const x of [3, 6, 9, 12]) put(x, 0, 0xfacc15); block(3, 1, 11, 2, 0xfacc15); put(5, 2, 0xdc2626); put(8, 2, 0x3b82f6); put(11, 2, 0x22c55e) }
@@ -469,26 +685,25 @@ export function pixelCells(mood: Mood, tick: number, pet: string, color = '', ac
     wait: { dx: [0, -1, 0, 1], dy: [0, 0, 0, 0] }, error: { dx: [-1, 1, -1, 1], dy: [0, 0, 0, 0] },
     sleep: { dx: [0, 0, 0, 0], dy: [1, 1, 0, 0] }, happy: { dx: [0, 0, 0, 0], dy: [0, -1, -1, 0] },
   }
-  const mv = MOVE[mood], dxm = mv.dx[tick % 4]!, dym = 1 + mv.dy[tick % 4]!
-  const moved = grid.map((_, y) => grid[y]!.map((__, x) => grid[y - dym]?.[x - dxm] ?? NONE))
-  if (celdas) {
-    // Sin glifos de medio bloque (algunas terminales, como Warp, los dibujan con rendijas): cada pixel es una celda de color de fondo (16x16 celdas).
-    // 16x16 pixeles -> 16x8 celdas (una celda mide ~1:2): cada celda mezcla los dos pixeles de su par de filas.
-    const mix = (a: number, b: number) => (a === NONE ? b : b === NONE ? a : (((((a >> 16) & 255) + ((b >> 16) & 255)) >> 1) << 16) | (((((a >> 8) & 255) + ((b >> 8) & 255)) >> 1) << 8) | (((a & 255) + (b & 255)) >> 1))
-    const wide: number[] = []
-    for (let y = 0; y < N; y += 2) for (let x = 0; x < N; x++) wide.push(0x20, 0, mix(moved[y]![x]!, moved[y + 1]![x]!))
-    return { columns: N, rows: N / 2, cells: (new Uint8Array(Uint32Array.from(wide).buffer) as unknown as { toBase64: () => string }).toBase64() }
-  }
-  const words: number[] = []
-  for (let r = 0; r < N / 2; r++) {
-    for (let x = 0; x < N; x++) {
-      const top = moved[2 * r]![x]!, bot = moved[2 * r + 1]![x]!
-      if (top === NONE && bot === NONE) words.push(0x20, 0, NONE)
-      else if (top === NONE) words.push(0x2584, bot, NONE)
-      else words.push(0x2580, top, bot)
-    }
-  }
-  return { columns: SPRITE_COLS, rows: SPRITE_ROWS, cells: (new Uint8Array(Uint32Array.from(words).buffer) as unknown as { toBase64: () => string }).toBase64() }
+  const rig: Rig = custom || design ? RIG_BASE : { ...RIG_BASE, ...RIG[pet] }
+  const posed = animate(grid, mood, tick, rig, !frames?.length)
+  const mv = MOVE[mood], dxm = mv.dx[tick % 4]! * S, dym = (1 + mv.dy[tick % 4]! + (rig.float ? [0, -1, -1, 0][tick % 4]! : 0)) * S
+  const moved = posed.map((_, y) => posed[y]!.map((__, x) => posed[y - dym]?.[x - dxm] ?? NONE))
+  props(moved, mood, tick, pet, !!(custom || design))
+  return moved
+}
+
+export function pixelCells(mood: Mood, tick: number, pet: string, color = '', accessory = 'ninguno', accent = '', custom?: CustomArt | null, design?: Design | null, celdas = false): { columns: number; rows: number; cells: string } {
+  const moved = pixelGrid(mood, tick, pet, color, accessory, accent, custom, design)
+  const b64 = (words: number[]) => (new Uint8Array(Uint32Array.from(words).buffer) as unknown as { toBase64: () => string }).toBase64()
+  if (!celdas) return { columns: SPRITE_COLS, rows: SPRITE_ROWS, cells: b64(quadCells(moved)) }
+  // Sin glifos de bloque (algunas terminales, como Warp, los dibujan con rendijas): cada pixel es una celda de color de fondo, a 16x16 pixeles.
+  // Una celda mide ~1:2: cada celda mezcla los dos pixeles de su par de filas.
+  const out = reduce2(moved), n = out.length
+  const mix = (a: number, b: number) => (a === NONE ? b : b === NONE ? a : (((((a >> 16) & 255) + ((b >> 16) & 255)) >> 1) << 16) | (((((a >> 8) & 255) + ((b >> 8) & 255)) >> 1) << 8) | (((a & 255) + (b & 255)) >> 1))
+  const wide: number[] = []
+  for (let y = 0; y < n; y += 2) for (let x = 0; x < n; x++) wide.push(0x20, 0, mix(out[y]![x]!, out[y + 1]![x]!))
+  return { columns: n, rows: n / 2, cells: b64(wide) }
 }
 
 // Misma escala de caracteres (de menos a mas "tinta") que usa el conversor de fotos ASCII.
@@ -527,6 +742,8 @@ export function photoCells(photo: AsciiPhoto, mood: Mood, tick: number): { colum
     wait: { dx: [0, 0, 0, 0], dy: [0, 0, 1, 1] }, error: { dx: [-1, 1, -1, 1], dy: [0, 0, 0, 0] },
     sleep: { dx: [0, 0, 0, 0], dy: [0, 0, 1, 1] }, happy: { dx: [0, 0, 0, 0], dy: [0, -1, 0, -1] },
   }
+  const SQUASH: Partial<Record<Mood, number[]>> = { sleep: [1, 0.97, 0.94, 0.97], wait: [1, 0.97, 0.94, 0.97], happy: [0.92, 1, 1.04, 1] }
+  const TILT: Partial<Record<Mood, number[]>> = { think: [0, 1, 0, -1], write: [0, 0, 1, 0], happy: [0, -1, 0, 1] }
   const mv = MOVE[mood]!, dx = mv.dx[tick % 4]!, dy = mv.dy[tick % 4]!
   const pulse = [1, 1.25, 1, 0.8][tick % 4]!                       // los colores muy saturados (luces, acentos) laten
   const glitch = mood === 'run' || mood === 'error'                 // filas que se desplazan un instante
@@ -535,7 +752,10 @@ export function photoCells(photo: AsciiPhoto, mood: Mood, tick: number): { colum
   for (let y = 0; y < rows; y++) {
     for (let x = 0; x < cols; x++) {
       const gx = glitch && (y * 7 + tick * 3) % 11 === 0 ? (tick % 2 ? 2 : -2) : 0
-      const sx = x - dx - gx, sy = y - dy
+      const sq = SQUASH[mood]?.[tick % 4] ?? 1
+      const sy = sq === 1 ? y - dy : Math.round(rows - 1 - (rows - 1 - y) / sq) - dy
+      const tilt = y < Math.floor(rows * 0.45) ? TILT[mood]?.[tick % 4] ?? 0 : 0
+      const sx = x - dx - gx - tilt
       const ch = sx >= 0 && sx < cols && sy >= 0 && sy < rows ? photo.chars[sy * cols + sx] : ' '
       const under = photo.bg ? photo.bg.slice((sy * cols + sx) * 6, (sy * cols + sx) * 6 + 6) : ''   // modo foto: color de fondo (celdas) o de la mitad de abajo (fino)
       const pulse1 = (c: number) => (Math.min(255, ((c >> 16) & 255) * pulse) << 16) | (Math.min(255, ((c >> 8) & 255) * pulse) << 8) | Math.min(255, (c & 255) * pulse)
@@ -553,15 +773,18 @@ export function photoCells(photo: AsciiPhoto, mood: Mood, tick: number): { colum
     }
   }
   // Gestos de mascota sobre la figura: zzz al dormir, corazones al terminar bien, ? al esperar, ! con error.
-  const gesto = { sleep: ['z', 'Z', 'z'], happy: ['♥', '♥', '♥'], wait: ['?', '?', '?'], error: ['!', '!', '!'] }[mood as 'sleep' | 'happy' | 'wait' | 'error']
+  const gesto = {
+    sleep: ['z', 'Z', 'z'], happy: ['♥', '♥', '♥'], wait: ['?', '?', '?'], error: ['!', '!', '!'],
+    think: ['.', 'o', 'O'], read: ['=', '≡', '='], write: ['_', '/', '_'], run: ['|', '/', '-', '\\'],
+  }[mood]
   if (gesto) {
-    const color = { sleep: 0x9ecbff, happy: 0xff7aa8, wait: 0xfacc15, error: 0xf87171 }[mood as 'sleep' | 'happy' | 'wait' | 'error']
+    const color = { sleep: 0x9ecbff, happy: 0xff7aa8, wait: 0xfacc15, error: 0xf87171, think: 0xe5e7eb, read: 0x93c5fd, write: 0xfbbf24, run: 0x9ca3af }[mood]
     const put = (x: number, y: number, ch: string) => {
       if (x < 0 || x >= cols || y < 0 || y >= rows) return
       words[(y * cols + x) * 3] = ch.codePointAt(0)!; words[(y * cols + x) * 3 + 1] = color
     }
-    const ox = Math.max(2, cols - 8), n = mood === 'sleep' ? 3 : 1
-    for (let k = 0; k < n; k++) put(ox + k * 2 - (tick % 4 >> 1), Math.max(0, 3 - k * 2 - (tick % 4 >> 1)), gesto[(k + tick) % 3]!)
+    const ox = Math.max(2, cols - 8), n = mood === 'sleep' || mood === 'think' ? 3 : 1
+    for (let k = 0; k < n; k++) put(ox + k * 2 - (tick % 4 >> 1), Math.max(0, 3 - k * 2 - (tick % 4 >> 1)), mood === 'run' ? gesto[tick % 4]! : gesto[(k + tick) % 3]!)
   }
   return { columns: cols, rows, cells: (new Uint8Array(Uint32Array.from(words).buffer) as unknown as { toBase64: () => string }).toBase64() }
 }

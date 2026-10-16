@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { actOf, animCells, fitPhoto, parseAnim, bar, bigArt, moodOf, generateSet, lookFromSeed, parseDesign, photoCells, parseLooks, parseColor, pixelCells, scene, SETS, skin, uniqueLooks } from './sprites'
+import { actOf, animCells, fitPhoto, parseAnim, bar, bigArt, moodOf, generateSet, lookFromSeed, parseDesign, photoCells, parseLooks, parseColor, pixelCells, scene, SETS, skin, uniqueLooks, PETS } from './sprites'
 
 describe('actOf', () => {
   test('copiar y mover archivos', () => {
@@ -202,8 +202,14 @@ describe('layout y comandos', () => {
     expect((await run('set')).text).toContain('equipo (4 propias)')
     await run('editar')
     expect(await text()).toContain('EDITOR DE MASCOTA')
+    expect((await pane.findAll({ type: 'Raster' })).length).toBe(8)
     await run('editar')
     expect(await text()).not.toContain('EDITOR DE MASCOTA')
+    await run('galeria')
+    expect(await text()).toContain('GALERIA DE MASCOTAS')
+    expect((await pane.findAll({ type: 'Raster' })).length).toBe(9)
+    await run('galeria')
+    expect(await text()).not.toContain('GALERIA DE MASCOTAS')
     expect((await run('set borrar equipo')).text).toContain('borrado')
   })
 })
@@ -523,5 +529,52 @@ describe('ventana aparte', () => {
     expect(calls.some(a => a[0] === 'osascript' && a[2]!.includes('claude-pets'))).toBe(true)
     expect(calls.filter(a => a[0] === 'python3' && a.some(x => x.endsWith('ventana.py'))).length).toBe(1)
     expect((await run('ventana off')).text).toContain('cerrada')
+  })
+})
+
+describe('animaciones completas', () => {
+  const mask = (c: { cells: string }) => {
+    const w = new Uint32Array(Uint8Array.from(atob(c.cells), ch => ch.charCodeAt(0)).buffer)
+    return Array.from({ length: w.length / 3 }, (_, i) => (w[3 * i] !== 0x20 || w[3 * i + 2] !== 0x01000000 ? 1 : 0)).join('')
+  }
+  const moods = ['think', 'read', 'write', 'run', 'wait', 'error', 'sleep', 'happy'] as const
+  const ok = { parts: [{ s: 'ellipse', cx: 8, cy: 9, rx: 5, ry: 4, c: '#6b3fa0' }, { s: 'tri', p: [[7, 4], [8, 0], [9, 4]], c: '#f4d03f', m: true }], face: { l: 5, r: 9, y: 7, mx: 7, my: 11 } }
+
+  test('todas las mascotas mueven el cuerpo', () => {
+    const bad: string[] = []
+    for (const pet of PETS) for (const m of moods) {
+      const sizes = new Set([0, 1, 2, 3, 4, 5, 6, 7].map(t => mask(pixelCells(m, t, pet)))).size
+      if (sizes < 3) bad.push(`${pet}/${m}:${sizes}`)
+    }
+    expect(bad).toEqual([])
+  })
+  test('utileria por actividad', () => {
+    expect(pixelCells('read', 0, 'cat').cells).not.toBe(pixelCells('read', 2, 'cat').cells)
+    const corner = (t: number) => {   // celdas (glifo + colores) de las columnas 13..15, filas 0..1
+      const w = Array.from(new Uint32Array(Uint8Array.from(atob(pixelCells('run', t, 'robot').cells), ch => ch.charCodeAt(0)).buffer))
+      return [0, 1].flatMap(r => w.slice((r * 16 + 13) * 3, (r * 16 + 16) * 3)).join(',')
+    }
+    expect(corner(0)).not.toBe(corner(1))
+  })
+  test('cuadros IA', () => {
+    const d = parseDesign({ ...ok, frames: [[[1, 1, 0]], [[1, -1, 0]], [[9, 0, 0]]] })!
+    expect(d.frames).toHaveLength(3)
+    expect(d.frames![2]).toEqual([])
+    expect(parseDesign({ ...ok, frames: [[[0, 5, 0]]] })!.frames).toBeUndefined()
+    const sin = parseDesign(ok)!
+    expect(pixelCells('think', 0, 'robot', '', 'ninguno', '', null, d).cells).not.toBe(pixelCells('think', 0, 'robot', '', 'ninguno', '', null, sin).cells)
+    const mid = parseDesign({ ...ok, parts: [ok.parts[0], { s: 'rect', c: 'rojo' }, ok.parts[1]], frames: [[[2, 1, 0]], []] })!
+    expect(mid.frames![0]).toEqual([[1, 1, 0]])
+  })
+  test('foto con cuerpo', () => {
+    const foto = { cols: 12, rows: 8, chars: '#'.repeat(96), colors: '808080'.repeat(96) }
+    const chars = (mood: 'run' | 'think', t: number) => Array.from(new Uint32Array(Uint8Array.from(atob(photoCells(foto, mood, t).cells), ch => ch.charCodeAt(0)).buffer)).filter((_, i) => i % 3 === 0).map(c => String.fromCodePoint(c))
+    expect(chars('run', 0)).toContain('|')
+    expect(chars('run', 1)).toContain('/')
+    expect(['.', 'o', 'O'].some(c => chars('think', 0).includes(c))).toBe(true)
+  })
+  test('arte de texto', () => {
+    expect(bigArt('happy', 0, 'cat')[1]).toBe('\\( ^.^ )/')
+    expect(bigArt('run', 0, 'cat')[2]).not.toBe(bigArt('run', 1, 'cat')[2])
   })
 })
