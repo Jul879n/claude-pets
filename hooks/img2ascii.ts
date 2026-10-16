@@ -7,7 +7,7 @@ COLS = max(16, min(120, int(sys.argv[2]))) if len(sys.argv) > 2 else 40
 FULL = len(sys.argv) > 3 and sys.argv[3] == 'cuerpo'
 MODE = sys.argv[4] if len(sys.argv) > 4 else 'ascii'      # 'braille': puntos braille 2x4 por celda con dos colores (frente y fondo); 'celdas': una celda = un color de fondo (sin costuras); 'fino': medios bloques con dos colores por celda; 'ascii': letras
 BLOCKS = MODE in ('celdas', 'fino', 'braille')     # por defecto, una figura alta se recorta a cabeza y torso para ganar detalle
-MAXROWS = 56
+MAXROWS = int(sys.argv[5]) if len(sys.argv) > 5 else 56
 cache = os.path.expanduser('~/.cache/claude-pets')
 os.makedirs(cache, exist_ok=True)
 if src.startswith('http'):
@@ -116,10 +116,25 @@ if MODE == 'braille':
 
 if MODE == 'celdas':
     # cada celda de terminal es un rectangulo de color de fondo (un espacio con bg): sin glifos, asi que no hay costuras entre filas
+    # color dominante de la region (no el promedio, que embarra): nitido como pixel art; contorno oscuro donde la figura toca el fondo
+    def dominante(c, r):
+        sx0, sx1 = x0 + c * cw // cols, max(x0 + (c + 1) * cw // cols, x0 + c * cw // cols + 1)
+        sy0, sy1 = y0 + r * ch // rows, max(y0 + (r + 1) * ch // rows, y0 + r * ch // rows + 1)
+        cs = [pix[y][x] for y in range(sy0, sy1) for x in range(sx0, sx1) if not bg[y][x]]
+        if len(cs) * 2 <= (sx1 - sx0) * (sy1 - sy0):
+            return None
+        cubos = {}
+        for q in cs:
+            cubos.setdefault((q[0] >> 5, q[1] >> 5, q[2] >> 5), []).append(q)
+        g = max(cubos.values(), key=len)
+        return vivo(*[sum(q[k] for q in g) // len(g) for k in range(3)], 200, 1.15)
+    grid = [[dominante(c, r) for c in range(cols)] for r in range(rows)]
     chars, colors, bgs = [], [], []
     for r in range(rows):
         for c in range(cols):
-            p = sample(c, r, r, cols, rows)
+            p = grid[r][c]
+            if p and any(not (0 <= r + dr < rows and 0 <= c + dc < cols) or grid[r + dr][c + dc] is None for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1))):
+                p = tuple(int(v * 0.55) for v in p)
             chars.append(' '); colors.append('000000'); bgs.append('%02x%02x%02x' % p if p else '------')
     print(json.dumps({'cols': cols, 'rows': rows, 'chars': ''.join(chars), 'colors': ''.join(colors), 'bg': ''.join(bgs)}))
     sys.exit(0)
@@ -140,6 +155,7 @@ if BLOCKS:
     sys.exit(0)
 
 RAMP = ' .\'^",:;Il!i><~+_-?][}{1)(|/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$'
+DENSA = '-/=+*xX%#&$@'
 chars, colors = [], []
 for r in range(rows):
     for c in range(cols):
@@ -152,7 +168,7 @@ for r in range(rows):
         r_ = sum(p[0] for p in cs) // len(cs); g_ = sum(p[1] for p in cs) // len(cs); b_ = sum(p[2] for p in cs) // len(cs)
         lum = (0.299 * r_ + 0.587 * g_ + 0.114 * b_) / 255
         lum = min(1.0, max(0.0, (lum - 0.5) * 1.35 + 0.55))      # contraste
-        chars.append(RAMP[min(len(RAMP) - 1, int(lum * (len(RAMP) - 1)) + 1)])
+        chars.append(DENSA[min(len(DENSA) - 1, int(lum * len(DENSA)))])   # solo caracteres densos (estilo $&@%/): la figura se lee llena
         # color vivo y nunca casi negro, para que se lea sobre fondo oscuro
         colors.append('%02x%02x%02x' % vivo(r_, g_, b_, 200, 1.4))
 print(json.dumps({'cols': cols, 'rows': rows, 'chars': ''.join(chars), 'colors': ''.join(colors)}))

@@ -32,6 +32,7 @@ export type Cfg = {
   design: Design | null
   anim: AsciiAnim | null
   asciiCols: number
+  src: string
   render: 'auto' | 'medios' | 'celdas'
   accessory: 'ninguno' | 'sombrero' | 'corona' | 'lentes' | 'corbata'
   eyes: string

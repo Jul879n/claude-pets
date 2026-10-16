@@ -402,8 +402,8 @@ describe('foto ASCII', () => {
     const run = (args: string) => $.command.run({ command: 'pets', args } as never)
     expect((await run('ascii')).text).toContain('Uso: /pets ascii')
     expect((await run('ascii detalle 40')).text).toContain('40 columnas')
-    expect((await run('ascii /x/eva.png EVA')).text).toContain('Mascota foto creada: EVA (4x3')
-    expect(argv.slice(-4)).toEqual(['/x/eva.png', '40', 'busto', 'braille'])
+    expect((await run('ascii /x/eva.png EVA')).text).toContain('Mascota ASCII creada: EVA (4x3')
+    expect(argv.slice(-4)).toEqual(['/x/eva.png', '40', 'busto', 'ascii'])
     const rasters = await pane.findAll({ type: 'Raster' })
     expect(rasters.some(r => r.props.columns === 4 && r.props.rows === 3)).toBe(true)
     expect((await run('mis')).text).toContain('EVA: foto ascii')
@@ -502,5 +502,26 @@ describe('foto que cabe completa', () => {
     expect([...f.chars].length).toBe(600)
     expect(f.colors.length).toBe(3600)
     expect(fitPhoto(foto, 50)).toBe(foto)
+  })
+})
+
+describe('ventana aparte', () => {
+  test('/pets ventana convierte a 110 columnas, escribe el visor y abre Terminal con osascript', async ($, on) => {
+    mock.store(on, {})
+    on('command.register', () => ({ value: { command: 'pets' } }))
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('agent.list', () => ({ value: [] }))
+    const calls: string[][] = []
+    on('process.run', (_$, e) => {
+      calls.push([...e.argv])
+      const out = e.argv.includes('110') ? JSON.stringify({ cols: 95, rows: 80, chars: '#', colors: 'ffffff' }) : ''
+      return { value: { exitCode: 0, stdout: out, stderr: '' } } as never
+    })
+    const run = (args: string) => $.command.run({ command: 'pets', args } as never)
+    expect((await run('ventana')).text).toContain('Uso: /pets ventana')
+    expect((await run('ventana /x/eva.png')).text).toContain('Ventana abierta: 95x80')
+    expect(calls.some(a => a[0] === 'osascript' && a[2]!.includes('claude-pets'))).toBe(true)
+    expect(calls.filter(a => a[0] === 'python3' && a.some(x => x.endsWith('ventana.py'))).length).toBe(1)
+    expect((await run('ventana off')).text).toContain('cerrada')
   })
 })

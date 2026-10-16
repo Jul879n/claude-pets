@@ -538,7 +538,10 @@ export function photoCells(photo: AsciiPhoto, mood: Mood, tick: number): { colum
       const sx = x - dx - gx, sy = y - dy
       const ch = sx >= 0 && sx < cols && sy >= 0 && sy < rows ? photo.chars[sy * cols + sx] : ' '
       const under = photo.bg ? photo.bg.slice((sy * cols + sx) * 6, (sy * cols + sx) * 6 + 6) : ''   // modo foto: color de fondo (celdas) o de la mitad de abajo (fino)
-      const bgc = under && !under.includes('-') ? tint(parseInt(under, 16)) : NONE
+      const pulse1 = (c: number) => (Math.min(255, ((c >> 16) & 255) * pulse) << 16) | (Math.min(255, ((c >> 8) & 255) * pulse) << 8) | Math.min(255, (c & 255) * pulse)
+      const isVivid = (c: number) => mood !== 'sleep' && Math.max((c >> 16) & 255, (c >> 8) & 255, c & 255) - Math.min((c >> 16) & 255, (c >> 8) & 255, c & 255) > 90
+      const raw = under && !under.includes('-') ? parseInt(under, 16) : -1
+      const bgc = raw < 0 ? NONE : tint(isVivid(raw) ? pulse1(raw) : raw)   // en celdas solidas las luces (colores vivos) tambien laten
       if (!ch || ch === ' ') { words.push(0x20, 0, bgc); continue }
       const i = RAMP.indexOf(ch)
       const alt = shimmer && i > 0 && (sx * 3 + sy * 5 + tick) % 13 === 0 ? RAMP[Math.min(RAMP.length - 1, i + 1)]! : ch
