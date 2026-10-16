@@ -25,10 +25,10 @@ Después abre una sesión nueva (o `/reload-plugins`): el pane se abre solo. Con
 
 ## Qué muestra
 
-- **Mascota principal** (izquierda) con su ánimo: pensando, leyendo, escribiendo, ejecutando, esperando agentes, error, contenta o dormida. Los sprites son de 32x32 y se dibujan con cuadrantes en 16 columnas x 8 filas de celdas, con relieve (sombra y contorno). El cuerpo se anima por partes (orejas, brazos, cola, patas...) en cada ánimo, con utilería según la actividad, y respira en reposo. Con actividad el tick es de 8 cuadros por segundo.
+- **Mascota principal** (izquierda) con su ánimo: pensando, leyendo, escribiendo, ejecutando, esperando agentes, error, contenta o dormida. Los sprites se dibujan en estilo 16 bits: una malla de 16x16 píxeles lógicos de 2x2 sobre la grilla de 32x32, con pocos tonos de relieve (sombra y contorno), y se muestran con cuadrantes en 16 columnas x 8 filas de celdas. El cuerpo se anima por partes (orejas, brazos, cola, patas...) en cada ánimo, con utilería según la actividad, y respira en reposo. Con actividad el tick es de 8 cuadros por segundo.
 - **Subagentes** (derecha): tarjetas con su mascota, estado, acción en curso, barra de actividad y tiempo; desde 5 agentes pasan a una tabla.
 - **Escenas** por acción: copiar, mover, borrar, leer documentos o código, buscar, descargar, instalar, probar, git, delegar.
-- Línea de estado con agentes vivos, avisos al terminar o fallar un agente y detección de agentes atascados.
+- Línea de estado con agentes vivos, avisos al terminar o fallar un agente y detección de agentes atascados. El pane revisa los agentes vivos al arrancar y cada 2 s en reposo, para no quedarse lento tras recargar el plugin.
 
 ## Comandos (`/pets`)
 

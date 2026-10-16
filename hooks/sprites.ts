@@ -331,6 +331,7 @@ function volume(g: number[][]) {
     let k = 1 - 0.16 * (y / N) + 0.08 * (1 - x / N)
     if (at(x - 2, y - 2) === NONE) k += 0.14
     if (at(x + 2, y + 2) === NONE) k -= 0.14
+    k = Math.round(k * 8) / 8   // tonos por escalones, como en los juegos de 16 bits
     g[y]![x] = k >= 1 ? light(c, Math.min(0.4, k - 1)) : shade(c, Math.max(0.55, k))
   }
 }
@@ -696,10 +697,13 @@ function pixelGrid(mood: Mood, tick: number, pet: string, color: string, accesso
 export function pixelCells(mood: Mood, tick: number, pet: string, color = '', accessory = 'ninguno', accent = '', custom?: CustomArt | null, design?: Design | null, celdas = false): { columns: number; rows: number; cells: string } {
   const moved = pixelGrid(mood, tick, pet, color, accessory, accent, custom, design)
   const b64 = (words: number[]) => (new Uint8Array(Uint32Array.from(words).buffer) as unknown as { toBase64: () => string }).toBase64()
-  if (!celdas) return { columns: SPRITE_COLS, rows: SPRITE_ROWS, cells: b64(quadCells(moved)) }
+  // Estilo de 16 bits: pixeles de 2x2 (16x16 logicos) con pocos tonos, en vez de los 32x32 finos.
+  const chunk = reduce2(moved)
+  const flat = moved.map((_, y) => moved[y]!.map((__, x) => chunk[y >> 1]![x >> 1]!))
+  if (!celdas) return { columns: SPRITE_COLS, rows: SPRITE_ROWS, cells: b64(quadCells(flat)) }
   // Sin glifos de bloque (algunas terminales, como Warp, los dibujan con rendijas): cada pixel es una celda de color de fondo, a 16x16 pixeles.
   // Una celda mide ~1:2: cada celda mezcla los dos pixeles de su par de filas.
-  const out = reduce2(moved), n = out.length
+  const out = chunk, n = out.length
   const mix = (a: number, b: number) => (a === NONE ? b : b === NONE ? a : (((((a >> 16) & 255) + ((b >> 16) & 255)) >> 1) << 16) | (((((a >> 8) & 255) + ((b >> 8) & 255)) >> 1) << 8) | (((a & 255) + (b & 255)) >> 1))
   const wide: number[] = []
   for (let y = 0; y < n; y += 2) for (let x = 0; x < n; x++) wide.push(0x20, 0, mix(out[y]![x]!, out[y + 1]![x]!))

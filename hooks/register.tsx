@@ -346,8 +346,9 @@ export const register: Register = on => {
       n++
       const active = watching || Date.now() <= busyUntil
       if (!cfg.calm && (active || showcase || n % 8 === 0)) void update($, model, m => ({ ...m, tick: m.tick + 1 }))
-      if (active && n % 40 === 0) void watch($)
+      if (n % (active ? 40 : 16) === 0) void watch($)   // en reposo tambien: tras recargar el plugin hay agentes vivos que ya no avisan
     })
+    void watch($).catch(() => undefined)
     return next(e)
   })
 
