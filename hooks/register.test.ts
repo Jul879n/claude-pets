@@ -578,3 +578,41 @@ describe('animaciones completas', () => {
     expect(bigArt('run', 0, 'cat')[2]).not.toBe(bigArt('run', 1, 'cat')[2])
   })
 })
+
+describe('timer autorreparable', () => {
+  let polls = 0   // watch() consulta agent.list cada 16 ticks en reposo: es la huella del timer
+  const setup = async ($: any, on: any) => {
+    polls = 0
+    mock.store(on, {})
+    const clock = mock.clock(on)
+    on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
+    on('session.end', () => ({ sessionId: 's' }) as never)
+    on('command.register', () => ({ value: { command: 'pets' } }))
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('ui.status', () => ({ value: undefined }))
+    on('ui.toast', () => ({ value: undefined }))
+    on('agent.list', () => { polls++; return { value: [] } })
+    on('turn.start', (_$: any, e: any) => ({ turnId: e.turnId }))
+    on('tool.call', () => ({ result: {} }) as never)
+    await $.session.start({ cwd: '/x', surface: 'terminal', isInteractive: true })
+    return clock
+  }
+  test('el tick sigue avanzando tras session.end por /clear', async ($, on) => {
+    const clock = await setup($, on)
+    await clock.advance(3000)
+    const antes = polls
+    await $.session.end({ reason: 'clear' } as never)
+    await clock.advance(3000)
+    expect(polls).toBeGreaterThan(antes)
+  })
+
+  test('un tool.call revive el timer cancelado', async ($, on) => {
+    const clock = await setup($, on)
+    await $.session.end({ reason: 'other' } as never)
+    await clock.advance(3000)
+    const antes = polls
+    await $.tool.call({ tool: 'Read', file_path: '/x/a.txt', tool_use_id: 'u1' } as never)
+    await clock.advance(6000)   // con actividad, watch() corre cada 40 ticks (5 s)
+    expect(polls).toBeGreaterThan(antes)
+  })
+})

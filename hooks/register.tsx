@@ -75,6 +75,23 @@ let watching = false
 let n = 0
 const warned = new Set<string>()
 let timer: { cancel: () => void } | undefined
+let lastBeat = 0
+
+// Timer autorreparable: el motor puede perderlo (/clear, worker de hooks reemplazado, dispatch rechazada) sin avisar.
+function ensureTimer($: EngineInterface, force = false) {
+  if (!force && timer && Date.now() - lastBeat <= 2000) return
+  timer?.cancel()
+  lastBeat = Date.now()
+  // Con actividad (herramientas o agentes vivos) las mascotas se mueven 8 veces por segundo (tambien con la galeria o el editor abiertos); en reposo respiran 1 vez por segundo.
+  timer = $.clock.every(TICK_MS, () => {
+    lastBeat = Date.now()
+    if (!cfg.on) return
+    n++
+    const active = watching || Date.now() <= busyUntil
+    if (!cfg.calm && (active || showcase || n % 8 === 0)) void update($, model, m => ({ ...m, tick: m.tick + 1 }))
+    if (n % (active ? 40 : 16) === 0) void watch($).catch(() => undefined)   // en reposo tambien: tras recargar el plugin hay agentes vivos que ya no avisan
+  })
+}
 
 // Revisa agentes vivos: deja de vigilar si no hay ninguno y avisa de los atascados.
 async function watch($: EngineInterface) {
@@ -339,15 +356,7 @@ export const register: Register = on => {
       argumentHint: HINT,
     })
     if (cfg.on) $.ui.open(openArgs()).catch(() => undefined)
-    timer?.cancel()
-    // Con actividad (herramientas o agentes vivos) las mascotas se mueven 8 veces por segundo (tambien con la galeria o el editor abiertos); en reposo respiran 1 vez por segundo.
-    timer = $.clock.every(TICK_MS, () => {
-      if (!cfg.on) return
-      n++
-      const active = watching || Date.now() <= busyUntil
-      if (!cfg.calm && (active || showcase || n % 8 === 0)) void update($, model, m => ({ ...m, tick: m.tick + 1 }))
-      if (n % (active ? 40 : 16) === 0) void watch($)   // en reposo tambien: tras recargar el plugin hay agentes vivos que ya no avisan
-    })
+    ensureTimer($, true)
     void watch($).catch(() => undefined)
     return next(e)
   })
@@ -643,11 +652,16 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   on('session.end', async ($, e, next) => {
-    timer?.cancel()
+    // /clear y resume no vuelven a disparar session.start: el timer debe sobrevivirlos.
+    if (e.reason !== 'clear' && e.reason !== 'resume') {
+      timer?.cancel()
+      timer = undefined
+    }
     return next(e)
   })
 
   on('turn.start', async ($, e, next) => {
+    ensureTimer($)
     await ensureLoaded($)
     if (!cfg.on) return next(e)
     busyUntil = Date.now() + IDLE_MS
@@ -659,12 +673,14 @@ export const register: Register = on => {
   })
 
   on('agent.spawn', async ($, e, next) => {
+    ensureTimer($)
     const ran = await next(e)
     if (cfg.on) watching = true
     return ran
   })
 
   on('tool.call', async ($, e, next) => {
+    ensureTimer($)
     await ensureLoaded($)
     if (!cfg.on) return next(e)
     busyUntil = Date.now() + IDLE_MS
@@ -731,6 +747,7 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    ensureTimer($)
     const els = $.ui.resolve(e)
     const { Box, Text } = els
     const RasterEl = 'Raster' in els ? els.Raster : undefined
