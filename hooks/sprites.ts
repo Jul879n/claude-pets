@@ -1,3 +1,4 @@
+import { parseModel3d } from './modelo3dspec'
 import type { Act, AsciiAnim, AsciiPhoto, CustomArt, Design, DesignPart, Pool, SavedLook, SetDef } from '../types'
 
 type Input = Record<string, unknown>
@@ -630,7 +631,7 @@ function props(g: number[][], mood: Mood, tick: number, pet: string, custom: boo
 }
 
 // La grilla de 32x32 de un sprite (colores 0xRRGGBB; NONE = transparente), con cara, accesorios, partes que se mueven y utileria.
-function pixelGrid(mood: Mood, tick: number, pet: string, color: string, accessory: string, accent: string, custom?: CustomArt | null, design?: Design | null): number[][] {
+function pixelGrid(mood: Mood, tick: number, pet: string, color: string, accessory: string, accent: string, custom?: CustomArt | null, design?: Design | null, noProps = false): number[][] {
   const body = color ? parseInt(color.slice(1), 16) : BODY[pet] ?? 0xfbbf24
   const tint = mood === 'sleep' ? dim(body) : body   // dormida: mismo color, un poco apagado
   const frames = design?.frames
@@ -690,7 +691,7 @@ function pixelGrid(mood: Mood, tick: number, pet: string, color: string, accesso
   const posed = animate(grid, mood, tick, rig, !frames?.length)
   const mv = MOVE[mood], dxm = mv.dx[tick % 4]! * S, dym = (1 + mv.dy[tick % 4]! + (rig.float ? [0, -1, -1, 0][tick % 4]! : 0)) * S
   const moved = posed.map((_, y) => posed[y]!.map((__, x) => posed[y - dym]?.[x - dxm] ?? NONE))
-  props(moved, mood, tick, pet, !!(custom || design))
+  if (!noProps) props(moved, mood, tick, pet, !!(custom || design))
   return moved
 }
 
@@ -727,7 +728,7 @@ export function fitPhoto(photo: AsciiPhoto, maxRows: number): AsciiPhoto {
       chars.push(src[i]!); colors.push(photo.colors.slice(i * 6, i * 6 + 6)); if (photo.bg) bg.push(photo.bg.slice(i * 6, i * 6 + 6))
     }
   }
-  return { cols, rows, chars: chars.join(''), colors: colors.join(''), bg: photo.bg ? bg.join('') : undefined }
+  return { cols, rows, chars: chars.join(''), colors: colors.join(''), bg: photo.bg ? bg.join('') : undefined, pet: photo.pet }
 }
 
 // Foto ASCII -> celdas de Raster: cada caracter con su color, ajustado al animo (apagada al dormir, roja con error, mas viva al ejecutar),
@@ -791,6 +792,207 @@ export function photoCells(photo: AsciiPhoto, mood: Mood, tick: number): { colum
     for (let k = 0; k < n; k++) put(ox + k * 2 - (tick % 4 >> 1), Math.max(0, 3 - k * 2 - (tick % 4 >> 1)), mood === 'run' ? gesto[tick % 4]! : gesto[(k + tick) % 3]!)
   }
   return { columns: cols, rows, cells: (new Uint8Array(Uint32Array.from(words).buffer) as unknown as { toBase64: () => string }).toBase64() }
+}
+
+// Estilo Ghostty: cuerpo gris con rampa corta que ondula de forma continua y un halo de color que fluye alrededor de la figura.
+// Devuelve la figura con GHOST_PAD celdas extra por lado para el halo.
+// Luminancia relativa WCAG y ajuste minimo para que un color supere el contraste `min` contra el fondo oscuro: terminales como Ghostty con
+// `minimum-contrast` pintan de blanco el texto que no lo cumple (el tema evangelion usa 7:1). Se sube el brillo conservando el tono.
+const relLum = (c: number) => [(c >> 16) & 255, (c >> 8) & 255, c & 255].map(v => { const x = v / 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4 }).reduce((a, v, i) => a + v * [0.2126, 0.7152, 0.0722][i]!, 0)
+export function readable(c: number, min = 7.5, bg = 0x0d0d1a): number {
+  const need = min * (relLum(bg) + 0.05) - 0.05
+  let r = (c >> 16) & 255, g = (c >> 8) & 255, b = c & 255
+  for (let i = 0; i < 40 && relLum((r << 16) | (g << 8) | b) < need; i++) {
+    if (Math.max(r, g, b) < 255) { const top = Math.max(r, g, b, 1), k = Math.min(255 / top, 1.12); r = Math.min(255, Math.round(r * k) + 2); g = Math.min(255, Math.round(g * k) + 2); b = Math.min(255, Math.round(b * k) + 2) }
+    else { r = Math.min(255, r + 12); g = Math.min(255, g + 12); b = Math.min(255, b + 12) }
+  }
+  return (r << 16) | (g << 8) | b
+}
+
+export const GHOST_PAD = 2
+const GHOST_HALO = '=+x*o%'
+export function ghostCells(photo: AsciiPhoto, mood: Mood, tick: number, halo = ''): { columns: number; rows: number; cells: string } {
+  const { cols, rows } = photo
+  const W = cols + GHOST_PAD * 2, H = rows + GHOST_PAD * 2
+  const speed = { sleep: 0.5, wait: 0.75, run: 2, error: 2, happy: 1.5 }[mood as string] ?? 1   // velocidad del halo
+  const tint = (c: number) => {
+    if (mood === 'sleep') return shade(c, 0.7)
+    if (mood === 'error') return ((((c >> 16) & 255) * 0.4 + 255 * 0.6) << 16) | ((((c >> 8) & 255) * 0.5) << 8) | (((c & 255) * 0.5) | 0)
+    return c
+  }
+  const L = RAMP.length - 1
+  // 3D: la figura se infla segun su distancia al borde (volumen redondeado) y gira alrededor del eje vertical con z-buffer e iluminacion.
+  // Una celda mide ~1:2, asi que las distancias verticales cuentan doble.
+  const solid = (x: number, y: number) => { if (x < 0 || y < 0 || x >= cols || y >= rows) return false; const ch = photo.chars[y * cols + x]; return !!ch && ch !== ' ' }
+  const RD = 8, dist = new Float32Array(cols * rows), depth = new Float32Array(cols * rows)
+  const maxZ = Math.max(2.5, cols * 0.2)
+  for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+    if (!solid(x, y)) continue
+    let d = RD
+    for (let oy = -4; oy <= 4; oy++) for (let ox = -RD; ox <= RD; ox++) if (!solid(x + ox, y + oy)) d = Math.min(d, Math.hypot(ox, 2 * oy))
+    dist[y * cols + x] = d
+    depth[y * cols + x] = 0.8 + (maxZ - 0.8) * Math.sqrt(Math.min(1, Math.max(0, d - 1) / (RD - 1)))
+  }
+  const dAt = (arr: Float32Array, x: number, y: number) => (x < 0 || y < 0 || x >= cols || y >= rows ? 0 : arr[y * cols + x]!)
+  let ar = 0, ag = 0, ab = 0, ns = 0
+  for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+    if (!solid(x, y)) continue
+    const c = parseInt(photo.colors.slice((y * cols + x) * 6, (y * cols + x) * 6 + 6), 16)
+    if (!Number.isNaN(c)) { ar += (c >> 16) & 255; ag += (c >> 8) & 255; ab += c & 255; ns++ }
+  }
+  const top = Math.max(ar, ag, ab, 1)
+  const avg = ns ? ((Math.round((ar / top) * 255)) << 16) | ((Math.round((ag / top) * 255)) << 8) | Math.round((ab / top) * 255) : 0x808080
+  const T = tick
+  const TAU = 2 * Math.PI, rad = (d: number) => (d * Math.PI) / 180
+  const ease = (u: number) => u * u * (3 - 2 * u)
+  const sn = (period: number, ph = 0) => Math.sin(TAU * (T / period) + ph)
+  const cyc = (period: number) => (T % period) / period
+  const spin = (period: number, share: number) => { const u = cyc(period); return u < share ? TAU * ease(u / share) : 0 }   // 360 una parte del ciclo y luego de frente
+  const hold = (period: number, on: number) => (cyc(period) < on ? 1 : 0)                                                   // pulso: activo una parte del ciclo
+  // Guion de cada accion: giro del cuerpo y de la cabeza (independientes), cabeceo, inclinacion, salto, inclinacion al correr, estiramiento,
+  // brazos [izq, der], pies [izq, der] (filas hacia arriba = negativo) y orejas [base, amplitud, periodo, 1 = opuestas].
+  type Script = { body: number; head: number; nod: number; roll: number; bounce: number; lean: number; squash: number; arm: [number, number]; foot: [number, number]; ear: number[] }
+  const base: Script = { body: 0, head: 0, nod: 0, roll: 0, bounce: 0, lean: 0, squash: 1 + 0.025 * sn(30), arm: [0, 0], foot: [0, 0], ear: [0, 0, 1, 0] }
+  const SCRIPTS: Record<string, Partial<Script>> = {
+    think: { body: rad(34) * sn(70), head: rad(10) * sn(70, 1), nod: -0.8 + 0.6 * sn(70, 1), roll: 1.2 * sn(70, 2), arm: [0, -2.5 * hold(70, 0.6)], ear: [0, 1, 48, 1] },
+    read: { body: rad(50) * sn(40), head: rad(10) * sn(40, 0.8), nod: 1 + 0.4 * sn(40), roll: 0.5 * sn(40), arm: [-1, -1], ear: [0, 1, 22, 0] },
+    write: { body: rad(12) * sn(24), head: rad(6) * sn(12), nod: 1.2 + 0.5 * sn(8), arm: [0, -1.5 * Math.max(0, sn(6))], ear: [0, 0.6, 18, 1] },
+    run: { body: spin(44, 0.55), head: rad(8) * sn(8), nod: -0.6 * sn(8), bounce: -2.2 * Math.abs(sn(16)), lean: 1.6, squash: 1 - 0.1 * (1 - Math.abs(sn(16))), arm: [-1.5 * sn(8), 1.5 * sn(8)], foot: [-1.5 * Math.max(0, sn(8)), -1.5 * Math.max(0, -sn(8))], ear: [1, 0.7, 6, 0] },
+    wait: { body: rad(22) * sn(80) * hold(80, 0.7), head: rad(8) * sn(100), nod: 0.3 * sn(50), roll: 1.4 * sn(60), foot: [0, -1.2 * Math.max(0, sn(14))], arm: [0, 0], ear: [0, 0.8, 60, 1] },
+    error: { body: rad(28) * sn(6), head: rad(10) * sn(5), nod: 0.5 * sn(3), roll: 1.2 * sn(4), bounce: 0.5 * sn(3), squash: 0.94, arm: [-2.2, -2.2], ear: [1, 0.6, 5, 1] },
+    sleep: { body: rad(5) * sn(110), head: 0, nod: 1.8 + 0.8 * sn(48), roll: 1 * sn(110), squash: 1 + 0.07 * sn(48), ear: [1, 0, 1, 0] },
+    happy: { body: spin(40, 0.5), head: rad(8) * sn(10), nod: -0.8 * Math.abs(sn(20)), bounce: -2.6 * Math.abs(sn(20)), squash: 1 - 0.14 * (1 - Math.abs(sn(20))), arm: [-2.2 * Math.abs(sn(10)), -2.2 * Math.abs(sn(10, 1.5))], ear: [-1, 1, 9, 0] },
+  }
+  const S: Script = { ...base, ...(SCRIPTS[mood] ?? {}) }
+  const hasEars = !!photo.pet && ['cat', 'fox', 'dog', 'bunny', 'monster', 'dragon'].includes(photo.pet)
+  const c0 = (cols - 1) / 2
+  const lx = -0.45, ly = -0.55, lz = 0.7, ln = Math.hypot(lx, ly, lz)
+  let bx0 = cols, bx1 = 0, by0 = rows, by1 = 0
+  for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) if (solid(x, y)) { bx0 = Math.min(bx0, x); bx1 = Math.max(bx1, x); by0 = Math.min(by0, y); by1 = Math.max(by1, y) }
+  const bw = Math.max(1, bx1 - bx0), bh = Math.max(1, by1 - by0)
+  const smooth = (v: number) => { const u = Math.min(1, Math.max(0, v)); return u * u * (3 - 2 * u) }
+  const body = new Array<number>(W * H).fill(-1)           // -1 = vacio, si no brillo 0..1
+  const hue = new Array<number>(W * H).fill(0x808080)
+  const shadeK = new Array<number>(W * H).fill(1)
+  const glyph = new Array<string>(W * H).fill(' ')
+  const zbuf = new Float32Array(W * H).fill(-1e9)
+  for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+    if (!solid(x, y)) continue
+    const ch = photo.chars[y * cols + x]!
+    const h = depth[y * cols + x]!
+    const hx = (dAt(depth, x + 1, y) - dAt(depth, x - 1, y)) / 2, hy = (dAt(depth, x, y + 1) - dAt(depth, x, y - 1)) / 4
+    const gx = dAt(dist, x - 1, y) - dAt(dist, x + 1, y), gy = (dAt(dist, x, y - 1) - dAt(dist, x, y + 1)) / 2
+    const tex = parseInt(photo.colors.slice((y * cols + x) * 6, (y * cols + x) * 6 + 6), 16)
+    const src = Number.isNaN(tex) ? 0x808080 : tex
+    const sl = Math.max(0, RAMP.indexOf(ch)) / L
+    // partes del cuerpo segun la posicion en la silueta: cabeza (arriba) -> cuerpo (abajo), brazos (laterales, medio), pies (abajo), orejas (arriba, laterales)
+    const u = (x - bx0) / bw, v = (y - by0) / bh
+    const s = smooth((v - 0.42) / 0.25)                                       // 0 cabeza .. 1 cuerpo
+    const yaw = S.body + S.head * (1 - s)                                       // la cabeza gira respecto al cuerpo
+    const cosA = Math.cos(yaw), sinA = Math.sin(yaw)
+    const side = u < 0.5 ? 0 : 1
+    const wArm = smooth((Math.abs(u - 0.5) - 0.3) / 0.12) * smooth((v - 0.4) / 0.1) * (1 - smooth((v - 0.85) / 0.1))
+    const wFoot = smooth((v - 0.8) / 0.1)
+    const wEar = hasEars ? smooth((0.32 - v) / 0.08) * smooth((Math.abs(u - 0.5) - 0.18) / 0.1) : 0
+    const earPh = side && S.ear[3] ? Math.PI : 0
+    const earDy = wEar * (S.ear[0]! + S.ear[1]! * Math.sin(TAU * (T / S.ear[2]!) + earPh)) * (1 - v / 0.32 * 0.4)
+    const dy = S.bounce + S.nod * (1 - s) + S.arm[side]! * wArm + S.foot[side]! * wFoot + earDy
+    const dx = S.roll * (1 - s) * (0.6 - v) * 2 + S.lean * (1 - v)
+    const yy = by1 - (by1 - y) * S.squash                                      // estiramiento / aplastamiento sobre la base
+    for (let z = -h; z <= h + 1e-6; z += 0.7) {
+      const px = x - c0
+      const X = Math.round(px * cosA + z * sinA + c0 + dx) + GHOST_PAD, Y = Math.round(yy + dy) + GHOST_PAD
+      if (X < 0 || X >= W || Y < 0 || Y >= H) continue
+      const zr = -px * sinA + z * cosA
+      if (zr <= zbuf[Y * W + X]!) continue
+      const front = z >= h - 0.35, back = z <= -h + 0.35
+      let nx = front ? -hx : back ? -hx : gx, ny = front ? -hy : back ? -hy : gy, nz = front ? 1 : back ? -1 : 0
+      if (!front && !back && Math.hypot(gx, gy) < 1e-3) { nx = -hx; ny = -hy; nz = 1 }
+      const nl = Math.hypot(nx, ny, nz) || 1
+      nx /= nl; ny /= nl; nz /= nl
+      const rx = nx * cosA + nz * sinA, rz = -nx * sinA + nz * cosA
+      const light = Math.max(0, (rx * lx + ny * ly + rz * lz) / ln)
+      const I = 0.28 + 0.72 * light
+      const val = front && z > 0 ? 0.72 * sl + 0.28 * I : I * 0.85
+      zbuf[Y * W + X] = zr
+      body[Y * W + X] = val
+      glyph[Y * W + X] = RAMP[Math.max(1, Math.round(val * L))]!
+      hue[Y * W + X] = z > 0 && front ? src : back ? avg : src
+      shadeK[Y * W + X] = 0.6 + 0.4 * I
+    }
+  }
+  let n = 0, cx = 0, cy = 0
+  for (let i = 0; i < W * H; i++) if (body[i]! >= 0) { n++; cx += i % W; cy += Math.floor(i / W) }
+  if (n) { cx /= n; cy /= n }
+  // Color completo por celda: el del sprite, aclarado si es muy oscuro (el contorno no debe desaparecer) y cuantizado para que los tramos de color sean pocos.
+  const vivid = (c: number) => {
+    // satura (los tonos palidos se veian blancos en la terminal) y sube lo oscuro
+    const m = (((c >> 16) & 255) + ((c >> 8) & 255) + (c & 255)) / 3
+    const ch = (v: number) => Math.max(0, Math.min(255, m + (v - m) * 2))
+    let r = ch((c >> 16) & 255), g = ch((c >> 8) & 255), b = ch(c & 255)
+    const top = Math.max(r, g, b, 1), up = top < 0xb0 ? 0xb0 / top : 1
+    r = Math.min(255, r * up); g = Math.min(255, g * up); b = Math.min(255, b * up)
+    return (((r | 0) & 0xf8) << 16) | (((g | 0) & 0xf8) << 8) | ((b | 0) & 0xf8)
+  }
+  const HALO = { think: 0xa855f7, read: 0x0ea5e9, write: 0xf59e0b, run: 0x22c55e, wait: 0x14b8a6, error: 0xef4444, sleep: 0x6366f1, happy: 0xec4899 }[mood] ?? 0x5b6cf0
+  const hc = readable(parseInt(halo.replace('#', ''), 16) || HALO)
+  const hc2 = readable(light(hc, 0.35))
+  const words: number[] = []
+  for (let Y = 0; Y < H; Y++) {
+    for (let X = 0; X < W; X++) {
+      const lum = body[Y * W + X]!
+      if (lum >= 0) {
+        words.push(glyph[Y * W + X]!.codePointAt(0)!, readable(tint(shade(vivid(hue[Y * W + X]!), shadeK[Y * W + X]!))), NONE)
+        continue
+      }
+      let near = false
+      for (let oy = -1; oy <= 1 && !near; oy++) for (let ox = -GHOST_PAD; ox <= GHOST_PAD; ox++) {
+        const xx = X + ox, yy = Y + oy
+        if (xx >= 0 && xx < W && yy >= 0 && yy < H && body[yy * W + xx]! >= 0) { near = true; break }
+      }
+      if (!near) { words.push(0x20, 0, NONE); continue }
+      const theta = (Math.atan2(Y - cy, X - cx) + Math.PI) / (2 * Math.PI)
+      const idx = ((Math.floor(theta * GHOST_HALO.length * 2 + tick * speed * 1.5) % GHOST_HALO.length) + GHOST_HALO.length) % GHOST_HALO.length
+      words.push(GHOST_HALO[idx]!.codePointAt(0)!, idx % 2 ? hc2 : hc, NONE)
+    }
+  }
+  return { columns: W, rows: H, cells: (new Uint8Array(Uint32Array.from(words).buffer) as unknown as { toBase64: () => string }).toBase64() }
+}
+
+// Celdas de Raster -> filas de tramos del mismo color ('' = color por defecto), para dibujarlas con Text cuando el Raster no pinta bien el color.
+export function cellRuns(g: { columns: number; rows: number; cells: string }): { t: string; c: string; b: string }[][] {
+  const bin = atob(g.cells)
+  const w = new Uint32Array(Uint8Array.from(bin, ch => ch.charCodeAt(0)).buffer)
+  const hex = (v: number) => (v >= 0x01000000 ? '' : '#' + v.toString(16).padStart(6, '0'))
+  return Array.from({ length: g.rows }, (_, y) => {
+    const out: { t: string; c: string; b: string }[] = []
+    for (let x = 0; x < g.columns; x++) {
+      const i = (y * g.columns + x) * 3
+      const ch = String.fromCodePoint(w[i]!), blank = ch === ' '
+      const c = blank ? '' : hex(w[i + 1]!), b = hex(w[i + 2]!)
+      const last = out[out.length - 1]
+      if (last && last.c === c && last.b === b) last.t += ch
+      else out.push({ t: ch, c, b })
+    }
+    return out
+  })
+}
+
+// Mascota de pixel art -> foto ASCII (32x16): cada celda mezcla su par de filas; el caracter sale de la luminancia y el color del pixel.
+export function petPhoto(pet: string, color = '', mood: Mood = 'wait', tick = 0, props = false): AsciiPhoto {
+  const g = pixelGrid(mood, tick, pet, color, 'ninguno', '', null, null, !props)
+  const n = g.length
+  let chars = '', colors = ''
+  // Un pixel = 2 columnas x 1 fila (la celda mide ~1:2, queda cuadrado): sin promediar filas, los ojos y detalles de 1-2 pixeles se conservan.
+  // La segunda columna usa un caracter vecino de la rampa (tramado) para dar textura.
+  for (let y = 0; y < n; y++) for (let x = 0; x < n * 2; x++) {
+    const c = g[y]![x >> 1]!
+    if (c === NONE || c === 0) { chars += ' '; colors += '000000'; continue }
+    const idx = Math.round((lumOf(c) / 255) * (RAMP.length - 1)) + (x & 1 ? ((x >> 1) + y) % 2 : 0)
+    chars += RAMP[Math.min(RAMP.length - 1, Math.max(1, idx))]!
+    colors += (c & 0xffffff).toString(16).padStart(6, '0')
+  }
+  return { cols: n * 2, rows: n, chars, colors, pet }
 }
 
 // Valida una animacion ASCII de la IA: 2 a 8 cuadros del mismo tamano (se completan o recortan a cols x rows), solo ASCII imprimible, colores hex por caracter.
@@ -1001,6 +1203,7 @@ export function parseLooks(text: string, max = 12): IaLook[] {
       custom: parseCustom(o),
       design: parseDesign(o.design),
       anim: parseAnim(o.anim),
+      model3d: parseModel3d(o.model3d),
       isSure: str(o.confianza) !== 'baja',
       question: str(o.pregunta).slice(0, 200),
     })

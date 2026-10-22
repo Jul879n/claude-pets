@@ -1,3 +1,7 @@
+import { MODELS, modelCells, modelSize } from './modelo3d'
+import { IA3D_SYSTEM, ia3dPrompt, parseModel3d, refine3dPrompt } from './modelo3dspec'
+import { EJEMPLO_DETALLE, PRESETS } from './modelos'
+import { MESH_PY } from './mesh2model'
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
@@ -7,7 +11,7 @@ import { IMG2ASCII_PY } from './img2ascii'
 import { VENTANA_PY, ventanaOsa } from './ventana'
 import type { IaLook, Mood } from './sprites'
 import {
-  ACCESSORIES, COLORS, photoCells, KIND_COLOR, LABEL, PETS, SETS, actOf, ago, bar, bigArt, moodOf,
+  ACCESSORIES, COLORS, photoCells, ghostCells, petPhoto, GHOST_PAD, KIND_COLOR, LABEL, PETS, SETS, actOf, ago, bar, bigArt, moodOf,
   ASCII_SPEC, DESIGN_SPEC, SPRITE_COLS, SPRITE_ROWS, fitPhoto, IA_SYSTEM, animCells, compactArt, generateSet, iaPrompt, lookFromSeed, parseLooks, parseColor, pixelCells, randomSeed, scene, skin, uniqueLooks,
 } from './sprites'
 
@@ -28,12 +32,16 @@ const LEFT_W = 34
 const PANE_ROWS = 18
 // Con una foto ASCII el pane pide mas alto para que quepa entera.
 const effRender = () => (cfg.render === 'auto' ? detectedRender : cfg.render)
-const paneRows = () => (cfg.photo || cfg.anim ? Math.min(64, (cfg.photo ?? cfg.anim)!.rows + 11) : PANE_ROWS)
+// Estilo ghostty con sprite vivo (set ascii o pixel art): 32 filas + halo.
+const modelRows = () => (cfg.look === 'pixel3d' ? 24 : cfg.look === 'pixel3dg' ? 20 : 24)   // el pixel art pide mas filas: cada fila es un pixel de alto
+const modelOn = () => cfg.look === 'modelo' || cfg.look === 'pixel3d' || cfg.look === 'pixel3dg'
+const ghostLive = () => (cfg.look === 'ghostty' || modelOn()) && (cfg.photo ? !!cfg.photo.pet : !cfg.anim && !cfg.custom && !cfg.design && cfg.style === 'pixel')
+const paneRows = () => (modelOn() ? modelRows() + 11 : ghostLive() ? 32 + GHOST_PAD * 2 + 11 : cfg.photo || cfg.anim ? Math.min(64, (cfg.photo ?? cfg.anim)!.rows + 11) : PANE_ROWS)
 const MOOD_ES: Record<Mood, string> = { think: 'pensando', read: 'leyendo', write: 'escribiendo', run: 'ejecutando', wait: 'esperando', error: 'error', sleep: 'durmiendo', happy: 'contenta' }
 const openArgs = () => ({ id: PANE, title: 'Mascotas', rows: paneRows() })
 
 const fresh = (): Live => ({ tools: 0, errors: 0, last: 0, since: Date.now(), by: {} })
-const defaults: Cfg = { on: true, pet: 'cat', name: '', color: '', accessory: 'ninguno', accent: '', custom: null, photo: null, design: null, anim: null, asciiCols: 40, src: '', render: 'auto', eyes: 'auto', set: '', style: 'pixel', narrow: false, web: true, calm: false, history: false, notify: true }
+const defaults: Cfg = { on: true, pet: 'cat', name: '', color: '', accessory: 'ninguno', accent: '', custom: null, photo: null, look: 'clasico', model3d: null, design: null, anim: null, asciiCols: 40, src: '', render: 'auto', eyes: 'auto', set: '', style: 'pixel', narrow: false, web: true, calm: false, history: false, notify: true }
 const initial: Model = { main: { ...fresh(), st: 'idle' }, agents: {}, tick: 0, timeline: [], summary: '', cfg: defaults, custom: {}, edit: false, gallery: false }
 const model = atom({ plugin: 'mascotas', key: 's' } as const, initial)
 
@@ -48,10 +56,10 @@ const HELP = [
   '/pets set [<nombre>|ninguno|guardar <nombre>|borrar <nombre>]   sets: animales, robots, fantasia, espacio',
   '/pets mis   /pets usar <nombre>   /pets guardar [nombre]   /pets quitar <nombre>   listado propio: lo que generes se guarda solo',
   '/pets ia <descripcion>   busca referencias en la web y dibuja con el modelo principal (/pets web off = solo Haiku)   /pets ia rapido <descripcion>   solo Haiku',
-  '/pets ia set <nombre> <descripcion del equipo>   crea un set de 6 con Haiku',
+  '/pets ia set <nombre> <descripcion del equipo>   crea un set de 6 con Haiku (con el modo modelo activo, 6 modelos 3D con Sonnet)   /pets ia modelo <descripcion>   la IA disena un modelo 3D animado',
   '/pets img <ruta o URL de una imagen> [nombre]   convierte una imagen en mascota de 32x32 (sin tokens)',
   '/pets foto <ruta o URL de una imagen> [nombre]   casi una imagen: cada celda es un color de fondo, sin costuras (sin tokens; usa el mismo detalle que ascii)   /pets foto fino <ruta>   medios bloques con dos colores por celda (el doble de alto, puede mostrar lineas segun la terminal)',
-  '/pets ascii <ruta o URL de una imagen> [nombre]   ASCII real con letras de colores (sin tokens); /pets foto <ruta> para pixel art   /pets ascii braille <ruta>   puntos braille   /pets ascii cuerpo <ruta>   /pets ascii detalle <16-120>   /pets ascii off',
+  '/pets ascii <ruta o URL de una imagen> [nombre]   ASCII real con letras de colores (sin tokens); /pets foto <ruta> para pixel art   /pets ascii braille <ruta>   puntos braille   /pets ascii cuerpo <ruta>   /pets ascii detalle <16-120>   /pets ascii ghostty on|off   /pets ascii modelo [off]   /pets pixel modelo [grueso|off]   /pets modelo eva01   /pets stl <ruta|url>   /pets ascii mascotas   /pets ascii off',
   '/pets decir <nombre> <mensaje>   o  /pets <nombre> <mensaje>   o  @<nombre> <mensaje> en el prompt: habla con ese subagente',
   '/pets render auto|medios|celdas   celdas = sin medios bloques (terminales como Warp los dibujan con rendijas); auto lo detecta',
   '/pets ia ascii <descripcion>   Sonnet escoge la mejor imagen y el generador ASCII la convierte, animada (consume tokens)',
@@ -71,6 +79,8 @@ const pendientes = new Map<string, string>()
 const pendientesAscii = new Map<string, string>()   // subagentes que dibujan arte ASCII animado
 let esperandoRecibo = 0   // resultados de esas investigaciones que aun llegaran al modelo principal (se consumen: no gastan tokens)
 let busyUntil = 0
+let lastActive = Date.now()   // ultima actividad de la sesion: el modelo 3D solo se anima sin parar mientras hay actividad reciente
+const LIVELY_MS = 60_000
 let watching = false
 let n = 0
 const warned = new Set<string>()
@@ -88,7 +98,7 @@ function ensureTimer($: EngineInterface, force = false) {
     if (!cfg.on) return
     n++
     const active = watching || Date.now() <= busyUntil
-    if (!cfg.calm && (active || showcase || n % 8 === 0)) void update($, model, m => ({ ...m, tick: m.tick + 1 }))
+    if (!cfg.calm && (active || showcase || (modelOn() && Date.now() - lastActive < LIVELY_MS) || n % 8 === 0)) void update($, model, m => ({ ...m, tick: m.tick + 1 }))
     if (n % (active ? 40 : 16) === 0) void watch($).catch(() => undefined)   // en reposo tambien: tras recargar el plugin hay agentes vivos que ya no avisan
   })
 }
@@ -122,13 +132,26 @@ async function mascotas($: EngineInterface) {
 }
 
 // Pide a Haiku n mascotas a partir de una descripcion; la respuesta se valida antes de usarse.
-async function generarIA($: EngineInterface, descripcion: string, n: number, refs = ''): Promise<{ looks: IaLook[]; error?: string }> {
+async function generarIA($: EngineInterface, descripcion: string, n: number, refs = '', force3d = false): Promise<{ looks: IaLook[]; error?: string }> {
   if (!descripcion.trim()) return { looks: [], error: 'Describe la mascota, ej. /pets ia un zorro astronauta naranja' }
   $.ui.toast(n === 1 ? 'Haiku esta dibujando la mascota (puede tardar hasta 1 minuto)...' : 'Haiku esta creando el set...')
-  const r = await $.model.complete({ model: 'haiku', system: IA_SYSTEM, prompt: iaPrompt(descripcion, n, refs), maxTokens: 700 * n, effort: 'low', timeoutMs: 120000 })
-  if (!r.isAnswered) return { looks: [], error: `Haiku no respondio (${r.reason}).` }
+  // Con el modo modelo activo la IA disena un modelo 3D (piezas articuladas) en vez de pixel art; Sonnet, porque el 3D pide mas criterio.
+  const m3 = force3d || modelOn()
+  if (m3) $.ui.toast('Sonnet esta modelando la mascota en 3D (puede tardar un par de minutos)...')
+  const r = m3
+    ? await $.model.complete({ model: 'sonnet', system: IA3D_SYSTEM + ' EJEMPLO DE NIVEL DE DETALLE ESPERADO (EVA-01, 77 piezas; imita su detalle, segmentos y proporciones, no su forma): ' + EJEMPLO_DETALLE, prompt: ia3dPrompt(descripcion, n), maxTokens: 9000 * n, effort: 'low', timeoutMs: 300000 })
+    : await $.model.complete({ model: 'haiku', system: IA_SYSTEM, prompt: iaPrompt(descripcion, n, refs), maxTokens: 700 * n, effort: 'low', timeoutMs: 120000 })
+  if (!r.isAnswered) return { looks: [], error: `${m3 ? 'Sonnet' : 'Haiku'} no respondio (${r.reason}).` }
   const looks = parseLooks(r.text, n)
-  return looks.length ? { looks } : { looks: [], error: 'Haiku no devolvio mascotas validas; prueba con otra descripcion.' }
+  // Segunda pasada (solo una mascota): Sonnet revisa su propio modelo y agrega proporciones, rasgos y detalle.
+  if (m3 && n === 1 && looks[0]?.model3d) {
+    $.ui.toast('Afinando el modelo 3D (segunda pasada)...')
+    const r2 = await $.model.complete({ model: 'sonnet', system: IA3D_SYSTEM + ' EJEMPLO DE NIVEL DE DETALLE ESPERADO (imita su detalle y segmentos): ' + EJEMPLO_DETALLE, prompt: refine3dPrompt(descripcion, looks[0].model3d), maxTokens: 9000, effort: 'low', timeoutMs: 300000 })
+    const fino = r2.isAnswered ? parseLooks(r2.text, 1)[0] : undefined
+    if (fino?.model3d && fino.model3d.parts.length >= looks[0].model3d.parts.length) looks[0] = { ...looks[0], model3d: fino.model3d }
+  }
+  if (m3 && !looks.some(l => l.model3d)) return { looks: [], error: 'La IA no devolvio un modelo 3D valido; prueba con otra descripcion.' }
+  return looks.length ? { looks } : { looks: [], error: 'La IA no devolvio mascotas validas; prueba con otra descripcion.' }
 }
 
 // Convierte una imagen (ruta o URL) en mascota de 32x32: python3 + sips hacen el trabajo y se valida lo que devuelven.
@@ -165,7 +188,8 @@ async function fotoAAscii($: EngineInterface, origen: string, nombre: string, cu
 }
 
 // Lanza un subagente (modelo principal, con busqueda web) que reune referencias; al terminar, turn.complete afina la mascota.
-async function investigarWeb($: EngineInterface, descripcion: string): Promise<string> {
+async function investigarWeb($: EngineInterface, descripcion: string, m3 = false): Promise<string> {
+  if (m3) return investigar3D($, descripcion)
   const res = await $.agent.spawn({
     description: `Referencias para la mascota: ${descripcion.slice(0, 40)}`,
     subagentType: 'general-purpose',
@@ -185,6 +209,23 @@ async function investigarWeb($: EngineInterface, descripcion: string): Promise<s
   if (deny || !agentId) return `No pude lanzar la busqueda web${deny ? `: ${deny}` : ''}.`
   pendientes.set(agentId, descripcion)
   return 'Busco referencias en la web y dibujo la mascota con el modelo principal (puede tardar un par de minutos y consume tokens); la aplico al terminar.'
+}
+
+// Modelo 3D con referencias: el subagente (Sonnet, con web y vision) busca imagenes del personaje, las MIRA y modela las piezas con sus proporciones reales.
+async function investigar3D($: EngineInterface, descripcion: string): Promise<string> {
+  const res = await $.agent.spawn({
+    description: `Modelo 3D: ${descripcion.slice(0, 40)}`,
+    subagentType: 'general-purpose',
+    model: 'sonnet',
+    prompt: 'Eres un modelador 3D. Vas a modelar la mascota de este personaje u objeto: ' + JSON.stringify(descripcion.slice(0, 300)) + '. ' +
+      'PASO 1: busca en la web (y Wikimedia Commons con curl si hace falta) de 3 a 5 imagenes del personaje de cuerpo completo, de frente y de perfil si se puede (arte oficial, model sheets, figuras). Descargalas con curl -sL a ~/.cache/claude-pets/refs/<nombre>-N.png (crea la carpeta; comprueba con file) y MIRA cada una con Read. ' +
+      'PASO 2: antes de modelar, anota para ti: proporciones (alto de la cabeza vs. el cuerpo, largo de brazos y piernas en cabezas), forma del torso, rasgos inconfundibles (cuernos, visor, armadura, placas, pelo, hocico, alas, colmillos, joyas) y el color EXACTO de cada parte. ' +
+      'PASO 3: modela el personaje con esas proporciones reales. Responde UNICAMENTE el arreglo JSON de un elemento, sin markdown ni texto, con este formato y reglas: ' + IA3D_SYSTEM.replace(/^Eres un modelador 3D de mascotas\. Responde SOLO un arreglo JSON, sin texto ni markdown\. /, '') + ' EJEMPLO DE NIVEL DE DETALLE ESPERADO (EVA-01, 77 piezas; imita su detalle, segmentos y proporciones, no su forma): ' + EJEMPLO_DETALLE,
+  })
+  const { agentId, deny } = res
+  if (deny || !agentId) return `No pude lanzar la busqueda web${deny ? `: ${deny}` : ''}.`
+  pendientes.set(agentId, descripcion)
+  return 'Sonnet busca imagenes del personaje, las mira y modela la mascota en 3D con sus proporciones reales (puede tardar varios minutos y consume tokens de Sonnet); la aplico al terminar.'
 }
 
 // /pets ia ascii: Sonnet reune candidatas y escoge la mejor imagen; el generador ASCII del mod la convierte (muy detallada, con animacion por cuadros: respiracion, brillo y glitch).
@@ -213,7 +254,7 @@ async function aplicarAscii($: EngineInterface, descripcion: string, texto: stri
   cfg.src = img
   await respaldar($)
   await guardarMascota($, look)
-  await setCfg($, { ...lookToCfg(look), anim: null })
+  await setCfg($, { ...lookToCfg(look), anim: null, look: modelOn() ? cfg.look : 'ghostty' })
   if (cfg.on) await $.ui.open(openArgs())
   $.ui.toast(`Mascota ASCII creada: ${look.name} (${look.photo!.cols}x${look.photo!.rows})`)
 }
@@ -252,7 +293,7 @@ async function animoVentana($: EngineInterface, animo: string) {
 // y la imagen convertida a 32x32 queda en el listado ("Nombre (img)"). Sin diseno ni silueta se usa la imagen; sin nada, Haiku elige con el texto de referencias.
 async function afinarConWeb($: EngineInterface, descripcion: string, refs: string) {
   let look: IaLook | undefined = parseLooks(refs, 1)[0]
-  const img = /IMAGEN:\s*(\S+)/.exec(refs)?.[1]
+  const img = look?.model3d ? undefined : /IMAGEN:\s*(\S+)/.exec(refs)?.[1]
   if (img) {
     const conv = await imagenAMascota($, img, (look?.name ?? descripcion.split(/\s+/)[0]!).slice(0, 9) + ' (img)')
     if (conv.look) {
@@ -268,7 +309,8 @@ async function afinarConWeb($: EngineInterface, descripcion: string, refs: strin
   await respaldar($)
   await guardarMascota($, look)
   await setCfg($, lookToCfg(look))
-  $.ui.toast(`Mascota creada con referencias web: ${look.name}`)
+  if (look.model3d && !modelOn()) await setCfg($, { look: 'pixel3d' })
+  $.ui.toast(`Mascota creada con referencias web: ${look.name}${look.model3d ? ` (modelo 3D de ${look.model3d.parts.length} piezas)` : ''}`)
 }
 
 // Manda un mensaje a un subagente por el nombre de su mascota (sin pasar por el modelo).
@@ -288,6 +330,8 @@ async function ensureLoaded($: EngineInterface) {
     const saved = (await $.store.get(STORE_CFG)) as Partial<Cfg> | undefined
     cfg = { ...defaults, ...saved }
     if ((cfg.style as string) === 'tarjetas') cfg = { ...cfg, style: 'pixel' }
+    // Foto del set ascii guardada antes de que llevara `pet` (32x16 sin imagen de origen): se marca para que se redibuje viva y en 3D.
+    if (cfg.photo && !cfg.photo.pet && cfg.photo.cols === 32 && cfg.photo.rows === 16 && !cfg.src && (PETS as readonly string[]).includes(cfg.pet)) cfg = { ...cfg, photo: { ...cfg.photo, pet: cfg.pet } }
     custom = ((await $.store.get(STORE_SETS)) as Record<string, SetDef> | undefined) ?? {}
     coleccion = ((await $.store.get(STORE_COL)) as Record<string, SavedLook> | undefined) ?? {}
     try {
@@ -312,11 +356,11 @@ const setOf = (name: string, mine: Record<string, SetDef>): SetDef | undefined =
 // Espacios duros: el renderizador no debe recortar ni colapsar la sangria del arte ASCII.
 const nbsp = (line: string) => line.replace(/ /g, '\u00a0')
 
-const principal = (c: Cfg): SavedLook => ({ pet: c.pet, accessory: c.accessory, color: c.color || '#fbbf24', accent: c.accent || undefined, custom: c.custom ?? undefined, photo: c.photo ?? undefined, design: c.design ?? undefined, anim: c.anim ?? undefined, name: c.name, eyes: c.eyes === 'auto' ? 'o.o' : c.eyes })
+const principal = (c: Cfg): SavedLook => ({ model3d: c.model3d ?? undefined, pet: c.pet, accessory: c.accessory, color: c.color || '#fbbf24', accent: c.accent || undefined, custom: c.custom ?? undefined, photo: c.photo ?? undefined, design: c.design ?? undefined, anim: c.anim ?? undefined, name: c.name, eyes: c.eyes === 'auto' ? 'o.o' : c.eyes })
 
 // Lo que hay que escribir en la configuracion para vestir a la principal con una mascota guardada.
 const lookToCfg = (l: SavedLook): Partial<Cfg> => ({
-  pet: l.pet as Cfg['pet'], color: l.color, accent: l.accent ?? '', custom: l.custom ?? null, photo: l.photo ?? null, design: l.design ?? null, anim: l.anim ?? null,
+  model3d: l.model3d ?? null, pet: l.pet as Cfg['pet'], color: l.color, accent: l.accent ?? '', custom: l.custom ?? null, photo: l.photo ?? null, design: l.design ?? null, anim: l.anim ?? null,
   accessory: l.accessory as Cfg['accessory'], eyes: l.eyes, name: l.name,
 })
 
@@ -387,7 +431,7 @@ export const register: Register = on => {
         const pet = PETS.find(p => p === arg)
         if (!pet) return { text: `Uso: /pets tipo ${PETS.join('|')}` }
         await respaldar($)
-        await setCfg($, { pet, custom: null, photo: null, design: null, anim: null })
+        await setCfg($, { pet, custom: null, photo: null, design: null, anim: null, model3d: null })
         return { text: `Mascota: ${pet}` }
       }
       case 'tipos':
@@ -434,12 +478,72 @@ export const register: Register = on => {
         if (cfg.on) await $.ui.open(openArgs())
         return { text: `Render: ${arg}${arg === 'auto' ? ` (aqui: ${detectedRender})` : ''}` }
       }
+      case 'stl': {
+        const tk = arg.split(/\s+/).filter(Boolean)
+        if (!tk[0]) return { text: 'Uso: /pets stl <ruta|url .stl/.obj> [#color] [y|z] [giro=grados] [torso=0.15] [tris=4500]   importa una malla 3D, la rigea como humanoide y la anima en pixel art (se activa pixel3d si el modo modelo esta apagado)' }
+        let up = 'auto', giro = '0', torso = '0', tris = '4500', color = '#9aa0b8'
+        for (const t of tk.slice(1)) {
+          if (/^#[0-9a-f]{6}$/i.test(t)) color = t.toLowerCase()
+          else if (t === 'y' || t === 'z') up = t
+          else if (/^giro=-?\d+$/.test(t)) giro = t.slice(5)
+          else if (/^torso=0?\.\d+$/.test(t)) torso = t.slice(6)
+          else if (/^tris=\d+$/.test(t)) tris = String(Math.max(800, Math.min(9000, +t.slice(5))))
+        }
+        const r = await $.process.run(['python3', '-I', '-c', MESH_PY, tk[0], up, giro, tris, torso], { timeoutMs: 120000 })
+        if (r.exitCode !== 0) return { text: `No pude importar la malla: ${r.stderr.trim().split('\n').pop() || 'error desconocido'}` }
+        let out: { error?: string; b64?: string; n?: number; m?: number; pivots?: Record<string, number[]> }
+        try { out = JSON.parse(r.stdout) } catch { return { text: 'La malla importada no es valida.' } }
+        if (out.error) return { text: out.error }
+        const model = parseModel3d({ parts: [], pivots: out.pivots, mesh: { n: out.n, m: out.m, b64: out.b64, color } })
+        if (!model) return { text: 'La malla importada es demasiado grande o no es valida (prueba con tris=2500).' }
+        await respaldar($)
+        await setCfg($, { model3d: model, pet: 'robot', name: tk[0].split('/').pop()!.replace(/\.[a-z0-9]+$/i, '').slice(0, 14) || 'malla', color, accent: '', accessory: 'ninguno', custom: null, photo: null, design: null, anim: null, ...(modelOn() ? {} : { look: 'pixel3d' as const }) })
+        if (cfg.on) await $.ui.open(openArgs())
+        return { text: `Malla importada: ${out.n} vertices, ${out.m} triangulos. Si se ve de espaldas, usa giro=180; si esta acostada, y o z.` }
+      }
+      case 'modelo': {
+        const hit = PRESETS[arg.toLowerCase().replace(/[^a-z0-9]/g, '')]
+        if (!hit) return { text: `Uso: /pets modelo <${Object.keys(PRESETS).join('|')}>   modelos 3D hechos a mano (se activa el pixel art 3D fino si el modo modelo esta apagado)` }
+        await respaldar($)
+        await setCfg($, { model3d: hit.model, pet: 'robot', name: hit.name, color: hit.color, accent: '', accessory: 'ninguno', custom: null, photo: null, design: null, anim: null, ...(modelOn() ? {} : { look: 'pixel3d' as const }) })
+        if (cfg.on) await $.ui.open(openArgs())
+        return { text: `Modelo 3D ${hit.name} activado (${hit.model.parts.length} piezas).` }
+      }
+      case 'pixel': {
+        if (arg !== 'modelo') return { text: 'Uso: /pets pixel modelo [grueso|off]   pixel art 3D (fino = medios bloques; grueso = 1 pixel por celda)' }
+        const off = more[0] === 'off'
+        await setCfg($, { look: off ? 'ghostty' : more[0] === 'grueso' ? 'pixel3dg' : 'pixel3d' })
+        if (cfg.on) await $.ui.open(openArgs())
+        return { text: off ? 'Modelo 3D desactivado: estilo ghostty.' : `Pixel art 3D ${more[0] === 'grueso' ? 'grueso' : 'fino (medios bloques)'} activado para todas las mascotas. Si ves manchas blancas, pon minimum-contrast = 1 en el tema de Ghostty o usa /pets pixel modelo grueso.` }
+      }
       case 'foto':
       case 'ascii': {
         if (arg === 'off') {
           await setCfg($, { photo: null, anim: null })
           if (cfg.on) await $.ui.open(openArgs())
           return { text: 'Foto desactivada: vuelve la mascota de pixel art.' }
+        }
+        if (arg === 'modelo' || (arg === 'pixel' && more[0] === 'modelo')) {
+          const activar = more[0] !== 'off'
+          const pixel = arg === 'pixel' || more[0] === 'pixel'
+          await setCfg($, { look: activar ? (pixel ? 'pixel3d' : 'modelo') : 'ghostty' })
+          if (cfg.on) await $.ui.open(openArgs())
+          return { text: activar ? `Modelo 3D completo activado en ${pixel ? 'pixel art (estilo Minish Cap)' : 'letras de color'} para todas las mascotas (${(MODELS as readonly string[]).join(', ')}; las especies nuevas toman la forma más cercana). /pets ascii modelo pixel = pixel art 3D; /pets ascii modelo off para volver al estilo ghostty.` : 'Modelo 3D desactivado: estilo ghostty.' }
+        }
+        if (arg === 'ghostty') {
+          const activar = more[0] === 'on'
+          if (!activar && more[0] !== 'off') return { text: `Estilo ghostty: ${cfg.look === 'ghostty' ? 'on' : 'off'}. Uso: /pets ascii ghostty on|off (cuerpo gris con halo que fluye, solo en fotos ASCII)` }
+          await setCfg($, { look: activar ? 'ghostty' : 'clasico' })
+          if (cfg.on) await $.ui.open(openArgs())
+          return { text: activar ? 'Estilo ghostty activado.' : 'Estilo clasico.' }
+        }
+        if (arg === 'mascotas') {
+          // Set "ascii": las 9 mascotas de la galeria como fotos ASCII (estilo ghostty), sin tokens.
+          const looks: SavedLook[] = PETS.map(pet => ({ pet, accessory: 'ninguno', color: '', name: pet, eyes: 'o.o', photo: petPhoto(pet) }))
+          await saveSets($, { ...custom, ascii: { looks } })
+          await setCfg($, { ...lookToCfg(looks[0]!), look: modelOn() ? cfg.look : 'ghostty', set: 'ascii' })
+          if (cfg.on) await $.ui.open(openArgs())
+          return { text: `Set "ascii" creado con ${looks.length} mascotas (${PETS.join(', ')}), estilo ghostty activo. /pets galeria las muestra; /pets mascota <nombre> para elegir una.` }
         }
         if (arg === 'detalle') {
           const cols = Math.round(Number(more[0]))
@@ -461,7 +565,7 @@ export const register: Register = on => {
         if (error || !look) return { text: error ?? 'Sin resultado.' }
         await respaldar($)
         await guardarMascota($, look)
-        await setCfg($, { ...lookToCfg(look), src: origen })
+        await setCfg($, { ...lookToCfg(look), src: origen, ...(modo === 'ascii' && !modelOn() ? { look: 'ghostty' as const } : {}) })
         if (cfg.on) await $.ui.open(openArgs())
         return { text: `Mascota ${modo === 'ascii' ? 'ASCII' : 'foto'} creada: ${look.name} (${look.photo!.cols}x${look.photo!.rows} celdas a color). Sin costo de tokens.` }
       }
@@ -484,7 +588,7 @@ export const register: Register = on => {
         if (arg === 'web') {
           const desc = more.join(' ')
           if (!desc.trim()) return { text: 'Uso: /pets ia web <descripcion>   (busca referencias en internet con el modelo principal y luego Haiku dibuja)' }
-          return { text: await investigarWeb($, desc) }
+          return { text: await investigarWeb($, desc, modelOn()) }
         }
         if (arg === 'set') {
           const [, , name = '', ...words] = e.args.trim().split(/\s+/)
@@ -495,21 +599,23 @@ export const register: Register = on => {
           return { text: `Set "${name}" creado con Haiku: ${looks.map(l => l.name).join(', ')}. /pets set ${name} para usarlo.` }
         }
         const quick = arg === 'rapido'
-        const desc = quick ? more.join(' ') : rest
+        const m3 = arg === 'modelo' || modelOn()   // /pets ia modelo <descripcion> pide el modelo 3D aunque el modo modelo este apagado
+        const desc = quick || arg === 'modelo' ? more.join(' ') : rest
         if (!quick && cfg.web) {
           if (!desc.trim()) return { text: 'Describe la mascota, ej. /pets ia EVA-01 de Evangelion' }
-          return { text: await investigarWeb($, desc) }
+          return { text: await investigarWeb($, desc, m3) }
         }
-        const { looks, error } = await generarIA($, desc, 1)
+        const { looks, error } = await generarIA($, desc, 1, '', m3)
         const look = looks[0]
         if (error || !look) return { text: error ?? 'Sin resultado.' }
         await respaldar($)
         await guardarMascota($, look)
-        await setCfg($, { pet: look.pet as Cfg['pet'], color: look.color, accent: look.accent ?? '', custom: look.custom ?? null, photo: null, design: null, anim: null, accessory: look.accessory as Cfg['accessory'], eyes: look.eyes, name: look.name })
+        await setCfg($, { model3d: look.model3d ?? null, pet: look.pet as Cfg['pet'], color: look.color, accent: look.accent ?? '', custom: look.custom ?? null, photo: null, design: null, anim: null, accessory: look.accessory as Cfg['accessory'], eyes: look.eyes, name: look.name })
+        if (m3 && look.model3d && !modelOn()) await setCfg($, { look: 'pixel3d' })
         const colors = look.accent ? `${look.color} + ${look.accent}` : look.color
         const doubt = look.isSure ? '' : `\nNo estoy seguro de los colores${look.question ? `: ${look.question}` : ''}. Ajusta con /pets color <#hex|nombre> y /pets acento <#hex|nombre|auto>, o repite /pets ia con mas detalle (ej. los colores que quieres).`
         const web = ''
-        return { text: `Mascota creada con Haiku: ${look.name} (${look.custom ? 'forma propia' : look.pet}, ${look.accessory}, ${colors}, ojos ${look.eyes}). Cuesta unos cientos de tokens de Haiku.${doubt}${web}` }
+        return { text: `Mascota creada con ${m3 ? 'Sonnet (modelo 3D)' : 'Haiku'}: ${look.name} (${look.model3d ? `modelo 3D de ${look.model3d.parts.length} piezas` : look.custom ? 'forma propia' : look.pet}, ${look.accessory}, ${colors}, ojos ${look.eyes}). Cuesta unos cientos de tokens de Haiku.${doubt}${web}` }
       }
       case 'mis':
       case 'lista': {
@@ -553,7 +659,7 @@ export const register: Register = on => {
         const look = lookFromSeed(seed, setOf(cfg.set, custom)?.pool)
         await respaldar($)
         await guardarMascota($, look)
-        await setCfg($, { pet: look.pet as Cfg['pet'], color: look.color, accessory: look.accessory as Cfg['accessory'], eyes: look.eyes, name: look.name, custom: null, photo: null, design: null, anim: null })
+        await setCfg($, { model3d: null, pet: look.pet as Cfg['pet'], color: look.color, accessory: look.accessory as Cfg['accessory'], eyes: look.eyes, name: look.name, custom: null, photo: null, design: null, anim: null })
         return { text: `Mascota generada${rest ? ` desde "${rest}"` : ''}: ${look.name} (${look.pet}, ${look.accessory}, ${look.color}, ojos ${look.eyes}). Repite /pets generar para otra.` }
       }
       case 'set': {
@@ -591,12 +697,12 @@ export const register: Register = on => {
         await update($, model, m => ({ ...m, gallery: !m.gallery, edit: false }))
         const next = await read($, model)
         showcase = next.edit || next.gallery
-        if (cfg.on) await $.ui.open(next.gallery ? { ...openArgs(), rows: Math.max(paneRows(), 20) } : openArgs())
+        if (cfg.on) await $.ui.open(next.gallery ? { ...openArgs(), rows: Math.max(paneRows(), cfg.look === 'ghostty' ? 50 : 20) } : openArgs())
         return { text: 'Galeria: las 9 mascotas base animadas, cambian de animo cada 4 s. /pets galeria de nuevo para salir.' }
       }
       case 'reset':
         await respaldar($)
-        await setCfg($, { pet: 'cat', name: '', color: '', accent: '', custom: null, photo: null, design: null, anim: null, accessory: 'ninguno', eyes: 'auto' })
+        await setCfg($, { model3d: null, pet: 'cat', name: '', color: '', accent: '', custom: null, photo: null, design: null, anim: null, accessory: 'ninguno', eyes: 'auto' })
         return { text: 'Mascota restablecida.' }
       case 'estilo':
         const style = arg === 'ascii' || arg === 'tarjetas' ? 'ascii' : arg === 'pixel' ? 'pixel' : undefined
@@ -634,6 +740,7 @@ export const register: Register = on => {
 
   // "@Nombre mensaje" en el prompt: se entrega al subagente y no llega al modelo principal.
   on('prompt.submit', async ($, e, next) => {
+    lastActive = Date.now()
     if (!cfg.on || e.command || e.isMeta) return next(e)
     const hit = /^@([\p{L}\p{N}_-]+)\s+([\s\S]+)/u.exec(e.text)
     if (!hit) return next(e)
@@ -665,6 +772,7 @@ export const register: Register = on => {
     await ensureLoaded($)
     if (!cfg.on) return next(e)
     busyUntil = Date.now() + IDLE_MS
+    lastActive = Date.now()
     if (!e.agentId) {
       await update($, model, m => ({ ...m, main: { ...fresh(), st: 'running' as const }, timeline: [] }))
       await animoVentana($, 'think')
@@ -684,6 +792,7 @@ export const register: Register = on => {
     await ensureLoaded($)
     if (!cfg.on) return next(e)
     busyUntil = Date.now() + IDLE_MS
+    lastActive = Date.now()
     const act = actOf(e.tool, e as unknown as Record<string, unknown>)
     if (!e.agentId) await animoVentana($, moodOf(act.kind, 'running'))
     const touch = (l: Live, isError = false): Live => ({
@@ -754,6 +863,8 @@ export const register: Register = on => {
     const m = await read($, model)
     await ensureLoaded($)
     const C = cfg   // preferencias del modulo (no se pierden al reiniciar la sesion)
+    const ghosty = C.look === 'ghostty' || C.look === 'modelo' || C.look === 'pixel3d' || C.look === 'pixel3dg'
+    const modelPet = modelOn() && RasterEl !== undefined
     if (!C.on) return <Text dimColor>Mascotas desactivadas. /pets on para activarlas.</Text>
     const agents = await $.agent.list()
     const now = Date.now()
@@ -778,22 +889,28 @@ export const register: Register = on => {
     // rows es el alto de toda la pantalla; el pane pide PANE_ROWS (marco 2 + pie 1 fuera del cuerpo).
     const avail = Math.max(5, Math.min(paneRows(), Math.max(8, rows - 10)) - 3)
     // Sprites de pixel art de 32x32 (32 columnas x 16 filas) para la principal; las tarjetas de subagentes usan la version de 16x8.
-    const photo = C.photo && RasterEl !== undefined ? fitPhoto(C.photo, Math.max(6, avail - 8)) : undefined   // foto ASCII: se achica para que quepa completa en el pane
+    // Estilo ghostty: tambien las mascotas de pixel art (sets existentes) se dibujan en ASCII 3D con su pose real.
+    const ghostPet = ghosty && usePixel && !C.photo && !C.anim && !C.custom && !C.design
+    const photo = C.photo && RasterEl !== undefined ? fitPhoto(C.photo.pet && ghosty ? petPhoto(C.photo.pet, C.color) : C.photo, Math.max(6, avail - 8)) : ghostPet ? fitPhoto(petPhoto(C.pet, C.color), Math.max(6, avail - 8)) : undefined   // foto ASCII: se achica para que quepa completa en el pane
     const anim = !photo && C.anim && RasterEl !== undefined ? C.anim : undefined   // arte ASCII animado dibujado por la IA
     const celdas = effRender() === 'celdas'
     // Sprite de pixel art de 32x32 en 16 columnas x 8 filas (cuadrantes).
     type Look = { pet: string; color: string; accessory: string; accent: string; custom?: Cfg['custom']; design?: Cfg['design'] }
     const pix = (key: string, md: Mood, L: Look) => RasterEl && <RasterEl key={key} {...pixelCells(md, tick, L.pet, L.color, L.accessory, L.accent, L.custom, L.design, celdas)} />
     // Foto ASCII, arte ASCII por cuadros o pixel art de la configuracion principal.
-    const spriteEl = (key: string, md: Mood, maxRows: number) => (C.photo ? RasterEl && <RasterEl key={key} {...photoCells(fitPhoto(C.photo, maxRows), md, tick)} />
+    // Estilo ghostty: los colores pasan por readable() (Ghostty con minimum-contrast pintaba de blanco lo que no lo cumple).
+    const ghostEl = (key: string, g: ReturnType<typeof ghostCells>) => RasterEl && <RasterEl key={key} {...g} />   // Raster: se repinta como una sola capa de celdas (mucho mas liviano que miles de Text)
+    const spriteEl = (key: string, md: Mood, maxRows: number) => (modelPet ? ghostEl(key, modelCells(C.pet, md, tick, Math.min(modelRows(), maxRows), 'main', C.look === 'pixel3d' ? 2 : C.look === 'pixel3dg' ? 1 : 0, false, { color: C.model3d ? undefined : C.color, accessory: C.accessory, model: C.model3d ?? undefined })) : (C.photo || ghostPet) ? RasterEl && (ghosty ? ghostEl(key, ghostCells(fitPhoto(C.photo ? (C.photo.pet ? petPhoto(C.photo.pet, C.color, md, tick >> 1, true) : C.photo) : petPhoto(C.pet, C.color, md, tick >> 1, true), maxRows), md, tick, C.accent)) : <RasterEl key={key} {...photoCells(fitPhoto(C.photo!, maxRows), md, tick)} />)
       : C.anim ? RasterEl && <RasterEl key={key} {...animCells(C.anim, md, tick)} /> : pix(key, md, C))
     const spriteW = SPRITE_COLS
     const spriteH = SPRITE_ROWS
-    const mainW = photo ? photo.cols : anim ? anim.cols : spriteW
-    const mainH = photo ? photo.rows : anim ? anim.rows : spriteH
+    const ghostPad = photo && ghosty ? GHOST_PAD * 2 : 0
+    const mdl = modelSize(Math.min(modelRows(), Math.max(6, avail - 8)))
+    const mainW = modelPet ? mdl.columns : photo ? photo.cols + ghostPad : anim ? anim.cols : spriteW
+    const mainH = modelPet ? mdl.rows : photo ? photo.rows + ghostPad : anim ? anim.rows : spriteH
     const leftW = Math.max(LEFT_W, mainW + 4)
     const cardW = CARD_W
-    const sprite = RasterEl !== undefined && (photo || anim || usePixel) ? spriteEl('main', mood, Math.max(6, avail - 8)) : undefined
+    const sprite = RasterEl !== undefined && (photo || anim || usePixel || modelPet) ? spriteEl('main', mood, Math.max(6, avail - 8)) : undefined
     const perRow = Math.max(1, Math.floor((cols - leftW - 3) / (cardW + 1)))
     const compactH = usePixel ? spriteH + 2 : 5
     const capFull = perRow * Math.floor(avail / (usePixel ? spriteH + 2 : 7))
@@ -801,7 +918,9 @@ export const register: Register = on => {
     const asTable = agents.length > Math.min(MAX_CARDS, capCompact)
     const fullCards = agents.length <= capFull
     const cardH = fullCards ? 7 : compactH
-    const roomy = avail >= (usePixel || photo || anim ? mainH + 8 : 10)
+    const faceRows = cardH - 2, faceCols = modelPet ? Math.round(faceRows * 3.2) : usePixel ? spriteW : 9
+    const pxMode = cfg.look === 'pixel3d' ? 2 : cfg.look === 'pixel3dg' ? 1 : 0
+    const roomy = avail >= (usePixel || photo || anim || modelPet ? mainH + 8 : 10)
     const mine = setOf(C.set, custom)
     const shown = asTable ? agents.slice(-Math.max(1, avail - 2)) : agents.slice(-Math.max(1, Math.floor(avail / cardH)) * perRow)
     const looks = uniqueLooks(agents.slice(-30).map(a => a.id), mine)
@@ -821,7 +940,7 @@ export const register: Register = on => {
           <Box gap={2} flexWrap="wrap">
             {PETS.map(pet => (
               <Box key={pet} flexDirection="column">
-                {RasterEl ? pix(pet, gm, { pet, color: '', accessory: 'ninguno', accent: '' }) : bigArt(gm, tick, pet).map(l => <Text color={mainColor}>{nbsp(l)}</Text>)}
+                {RasterEl ? (modelOn() ? ghostEl(pet, modelCells(pet, gm, tick, 14, 'galeria', cfg.look === 'pixel3d' ? 2 : cfg.look === 'pixel3dg' ? 1 : 0)) : (cfg.look === 'ghostty' || cfg.look === 'modelo') ? ghostEl(pet, ghostCells(fitPhoto(petPhoto(pet, '', gm, tick >> 1, true), 14), gm, tick, C.accent)) : pix(pet, gm, { pet, color: '', accessory: 'ninguno', accent: '' })) : bigArt(gm, tick, pet).map(l => <Text color={mainColor}>{nbsp(l)}</Text>)}
                 <Text dimColor>{pet} · {MOOD_ES[gm]}</Text>
               </Box>
             ))}
@@ -883,7 +1002,7 @@ export const register: Register = on => {
           const bad = a.status === 'failed' || a.status === 'killed'
           const act = a.status === 'running' ? live?.act : undefined
           const text = `${me.name.slice(0, 7).padEnd(8)}${faceOf(a, me, bad).padEnd(8)}${ICON[a.status]} ${a.type.slice(0, 8).padEnd(9)}${(act ? `${LABEL[act.kind]} ${act.target}` : a.status).slice(0, 22).padEnd(23)}${bar(live?.tools ?? 0, 6)} ${live?.tools ?? 0} ${ago(now - (live?.since ?? now))}`
-          return <Text key={a.id} color={bad ? COLOR[a.status] : me.color}>{text}</Text>
+          return <Text key={a.id} color={bad ? COLOR[a.status] : me.color || '#c084fc'}>{text}</Text>
         })}
       </Box>
     ) : (
@@ -895,20 +1014,22 @@ export const register: Register = on => {
           const bad = a.status === 'failed' || a.status === 'killed'
           const act = a.status === 'running' ? live?.act : undefined
           const amood = bad ? 'error' : stuck ? 'wait' : a.status === 'running' ? moodOf(act?.kind ?? 'think', 'running') : a.status === 'completed' ? 'happy' : 'sleep'
-          const tone = bad ? COLOR[a.status] : me.color
+          const tone = bad ? COLOR[a.status] : me.color || '#c084fc'
           const full = bigArt(amood, tick, me.pet, { eyes: me.eyes, accessory: me.accessory })
           const face = fullCards ? full : compactArt(full, me.accessory)
           const doing = act ? <Text color={KIND_COLOR[act.kind]}>{LABEL[act.kind]} {act.target.slice(0, 8)}</Text> : <Text dimColor>{stuck ? 'sin actividad' : ' '}</Text>
           return (
             <Box key={a.id} width={cardW} borderStyle="round" borderColor={COLOR[a.status]} paddingX={2} gap={1}>
-              {usePixel && RasterEl ? (
+              {modelPet ? (
+                ghostEl(`mf-${a.id}`, modelCells(me.pet, amood, tick + (a.id.charCodeAt(a.id.length - 1) % 40), faceRows, `card-${a.id}`, pxMode, true, { color: me.model3d && !bad ? undefined : bad ? '#f87171' : me.color, accessory: me.accessory, model: me.model3d && !bad ? me.model3d : undefined }))
+              ) : usePixel && RasterEl ? (
                 pix(`px-${a.id}`, amood, { pet: me.pet, color: bad ? '#f87171' : me.color, accessory: me.accessory, accent: bad ? '' : me.accent ?? '', custom: me.custom, design: me.design })
               ) : (
                 <Box flexDirection="column">{face.map(l => <Text color={tone}>{nbsp(l)}</Text>)}</Box>
               )}
               <Box flexDirection="column">
                 <Text color={tone} weight="bold">{me.name.toUpperCase()} <Text color={COLOR[a.status]}>{ICON[a.status]} {a.status}</Text></Text>
-                {fullCards ? <Text>{a.description.slice(0, cardW - 6 - (usePixel ? spriteW : 9) - 1)}</Text> : act ? doing : <Text>{a.description.slice(0, cardW - 6 - (usePixel ? spriteW : 9) - 1)}</Text>}
+                {fullCards ? <Text>{a.description.slice(0, cardW - 6 - faceCols - 1)}</Text> : act ? doing : <Text>{a.description.slice(0, cardW - 6 - faceCols - 1)}</Text>}
                 {fullCards && doing}
                 <Text color={tone}>{bar(live?.tools ?? 0, 6)} {live?.tools ?? 0} {ago(now - (live?.since ?? now))}</Text>
               </Box>
@@ -929,7 +1050,7 @@ export const register: Register = on => {
           {agents.slice(-6).map(a => {
             const me = looks[a.id] ?? lookFromSeed(a.id)
             const act = a.status === 'running' ? m.agents[a.id]?.act : undefined
-            return <Text key={a.id} color={me.color}>{me.name} {ICON[a.status]} {a.type} {act ? LABEL[act.kind] : a.status}</Text>
+            return <Text key={a.id} color={me.color || '#c084fc'}>{me.name} {ICON[a.status]} {a.type} {act ? LABEL[act.kind] : a.status}</Text>
           })}
           {footer}
         </Box>

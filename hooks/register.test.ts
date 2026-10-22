@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { actOf, animCells, fitPhoto, parseAnim, bar, bigArt, moodOf, generateSet, lookFromSeed, parseDesign, photoCells, parseLooks, parseColor, pixelCells, scene, SETS, skin, uniqueLooks, PETS } from './sprites'
+import { actOf, animCells, fitPhoto, parseAnim, bar, bigArt, moodOf, generateSet, lookFromSeed, parseDesign, photoCells, ghostCells, petPhoto, parseLooks, parseColor, pixelCells, scene, SETS, skin, uniqueLooks, PETS } from './sprites'
 
 describe('actOf', () => {
   test('copiar y mover archivos', () => {
@@ -393,6 +393,24 @@ describe('foto ASCII', () => {
     expect(new Set([0, 1, 2, 3].map(t => photoCells(p, 'sleep', t).cells)).size).toBeGreaterThan(1)
     expect(photoCells(p, 'sleep', 0).cells).not.toBe(photoCells(p, 'error', 0).cells)
     expect(photo.chars.length).toBeGreaterThan(0)
+  })
+
+  test('ghostCells agrega halo del color pedido, cambia por tick y por animo', () => {
+    const p = { cols: 4, rows: 3, chars: '@#%8*+. @#%8', colors: 'ff8800'.repeat(12) }
+    const words = (c: string) => Array.from(new Uint32Array(Uint8Array.from(atob(c), ch => ch.charCodeAt(0)).buffer))
+    const g = ghostCells(p, 'think', 0, '#112233')
+    expect(g).toMatchObject({ columns: 8, rows: 7 })
+    expect(words(g.cells).filter((_, i) => i % 3 === 1)).toContain(0x112233)
+    expect(new Set([0, 4, 8, 12].map(t => ghostCells(p, 'think', t).cells)).size).toBeGreaterThan(1)
+    expect(ghostCells(p, 'sleep', 0).cells).not.toBe(ghostCells(p, 'error', 0).cells)
+  })
+
+  test('petPhoto convierte cada mascota en foto ASCII 64x32 con figura', () => {
+    for (const pet of PETS) {
+      const f = petPhoto(pet)
+      expect([f.cols, f.rows, [...f.chars].length, f.colors.length]).toEqual([64, 32, 2048, 12288])
+      expect(f.chars.trim().length).toBeGreaterThan(20)
+    }
   })
 
   test('/pets ascii crea la foto desde la salida de python, se guarda y /pets ascii off la quita', async ($, on) => {

@@ -13,11 +13,13 @@ export type Design = { parts: DesignPart[]; face: Face; frames?: number[][][] }
 // Animacion de arte ASCII dibujada por la IA: cuadros de cols x rows caracteres (cada cuadro, sus filas unidas), color por caracter y uno base.
 export type AsciiAnim = { cols: number; rows: number; frames: string[]; colors: Record<string, string>; base: string }
 // Foto ASCII a color: un caracter por celda (cols x rows) y su color (6 hex por celda).
-export type AsciiPhoto = { cols: number; rows: number; chars: string; colors: string; bg?: string }
+export type AsciiPhoto = { cols: number; rows: number; chars: string; colors: string; bg?: string; pet?: string }   // pet: se redibuja con la pose real de ese sprite segun el animo
 // Forma propia dibujada por la IA: 14 filas de 14 caracteres ('.' vacio, letras = claves de palette) y donde van los ojos y la boca.
 export type Face = { l: number; r: number; y: number; mx: number; my: number }
 export type CustomArt = { art: string[]; palette: Record<string, string>; face?: Face }
-export type SavedLook = { pet: string; accessory: string; color: string; name: string; eyes: string; accent?: string; custom?: CustomArt; photo?: AsciiPhoto; design?: Design; anim?: AsciiAnim }
+export type Part3D = { g: string; c: [number, number, number]; r: [number, number, number]; color: string; tex?: 'stripes' | 'spots' | 'belly' }
+export type Model3D = { parts: Part3D[]; pivots: Record<string, [number, number, number]>; eyes?: { x: number; y: number; z: number; r: number; color: string }; mouth?: [number, number, number]; mesh?: { n: number; m: number; b64: string; color: string; h: number }; stance?: { lean: number; arms: number; elbow: number; knee: number } }
+export type SavedLook = { pet: string; accessory: string; color: string; name: string; eyes: string; accent?: string; custom?: CustomArt; photo?: AsciiPhoto; design?: Design; anim?: AsciiAnim; model3d?: Model3D }
 export type Pool = { pets: string[]; colors: string[]; names: string[]; accessories: string[] }
 // Un set fija las mascotas de los subagentes: un pool (se generan a partir de el) y/o mascotas fijas.
 export type SetDef = { pool?: Pool; looks?: SavedLook[] }
@@ -29,8 +31,10 @@ export type Cfg = {
   accent: string
   custom: CustomArt | null
   photo: AsciiPhoto | null
+  look: 'clasico' | 'ghostty' | 'modelo' | 'pixel3d' | 'pixel3dg'
   design: Design | null
   anim: AsciiAnim | null
+  model3d: Model3D | null
   asciiCols: number
   src: string
   render: 'auto' | 'medios' | 'celdas'
